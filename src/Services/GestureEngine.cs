@@ -37,10 +37,13 @@ public sealed class GestureEngine : IDisposable
     private readonly Dispatcher _uiDispatcher;
     private readonly GestureRecognizer _recognizer = new();
 
-    // 偏好快照 —— 钩子回调里读,避免每次过 ConfigStore。锁保护更新。
-    private AppPreferences _prefsSnapshot;
-    private IReadOnlyList<GestureCommand> _gesturesSnapshot;
-    private ulong _gesturesVersionSnapshot;
+    // R3:偏好 / 手势快照用 volatile 引用,hook 线程「无锁读」。
+    // ConfigStore 改配置时是整体替换出新的不可变对象,所以持有旧引用始终是个一致的快照,
+    // 更新只是原子换引用 —— hook 线程不再为了读配置去抢 _stateLock(避免和 UI 线程竞争)。
+    private volatile AppPreferences _prefsSnapshot;
+    private volatile GestureSnapshot _gestureSnapshot;
+
+    private sealed record GestureSnapshot(IReadOnlyList<GestureCommand> Gestures, ulong Version);
 
     private State _state = State.Idle;
     private readonly List<Point> _points = new(256);
@@ -48,6 +51,7 @@ public sealed class GestureEngine : IDisposable
     private Point _lastPoint;
     private Point _lastArmedPoint;
     private NativeMethods.POINT _startPointWin;
+    private long _downTick;
 
     // System.Threading.Timer:回调跑在 ThreadPool 上;callback 内重新进 lock 同步状态。
     private readonly System.Threading.Timer _gestureTimeoutTimer;
@@ -65,21 +69,16 @@ public sealed class GestureEngine : IDisposable
         _overlay = overlay;
         _uiDispatcher = uiDispatcher;
         _prefsSnapshot = store.Preferences;
-        _gesturesSnapshot = store.Gestures;
-        _gesturesVersionSnapshot = store.GesturesVersion;
+        _gestureSnapshot = new GestureSnapshot(store.Gestures, store.GesturesVersion);
 
         _gestureTimeoutTimer = new System.Threading.Timer(OnGestureTimeoutFired, null, Timeout.Infinite, Timeout.Infinite);
         _safetyTimer = new System.Threading.Timer(OnSafetyTimerFired, null, Timeout.Infinite, Timeout.Infinite);
 
         store.Changed += _ =>
         {
-            // ConfigStore.Changed 在 UI 线程上 fire。我们用锁短暂阻塞 hook 线程读快照,毫秒级。
-            lock (_stateLock)
-            {
-                _prefsSnapshot = store.Preferences;
-                _gesturesSnapshot = store.Gestures;
-                _gesturesVersionSnapshot = store.GesturesVersion;
-            }
+            // 无锁更新:原子换引用即可。hook 线程读时不必加锁,也就不会和这里竞争。
+            _prefsSnapshot = store.Preferences;
+            _gestureSnapshot = new GestureSnapshot(store.Gestures, store.GesturesVersion);
         };
     }
 
@@ -92,10 +91,11 @@ public sealed class GestureEngine : IDisposable
     /// <summary>由 <see cref="MouseHook"/> 在 hook 线程上直接调。返回 <c>true</c> = 吞掉。</summary>
     public bool HandleMouseEvent(MouseEvent e)
     {
+        // 无锁快速拒绝:手势关闭时所有事件直接放行,连锁都不抢。
+        if (!_prefsSnapshot.GesturesEnabled) return false;
+
         lock (_stateLock)
         {
-            if (!_prefsSnapshot.GesturesEnabled) return false;
-
             return e.Kind switch
             {
                 MouseEventKind.RightButtonDown => HandleRightDown(e),
@@ -115,6 +115,7 @@ public sealed class GestureEngine : IDisposable
         _startPoint = new Point(e.X, e.Y);
         _lastPoint = _startPoint;
         _startPointWin = new NativeMethods.POINT { X = e.X, Y = e.Y };
+        _downTick = Environment.TickCount64;
         _points.Clear();
         _points.Add(_startPoint);
         ArmSafetyTimerLocked();
@@ -176,9 +177,12 @@ public sealed class GestureEngine : IDisposable
         {
             case State.Pending:
             {
-                // 纯单击 → 回放右键事件,让系统右键菜单弹出。
+                // 纯单击 → 回放右键让系统菜单弹出。
+                // ★关键★:绝不能在这里(钩子回调内 + 持锁)直接 SendInput。
+                // 从 LL 钩子回调内部注入输入,系统会把注入事件排到当前钩子处理之后并串行化,
+                // 实测右键菜单要等 1.5s 以上。改成 ThreadPool 在回调返回后立刻回放,菜单瞬时弹出。
                 ResetTrackingLocked();
-                KeyboardSender.ReplayRightClick();
+                ThreadPool.QueueUserWorkItem(static _ => KeyboardSender.ReplayRightClick());
                 return true;
             }
             case State.Gesturing:
@@ -187,8 +191,7 @@ public sealed class GestureEngine : IDisposable
                 var capturedPoints = _points.ToArray();
                 var capturedStartWin = _startPointWin;
                 var capturedPrefs = _prefsSnapshot;
-                var capturedGestures = _gesturesSnapshot;
-                var capturedVersion = _gesturesVersionSnapshot;
+                var snapshot = _gestureSnapshot;
 
                 ResetTrackingLocked();
 
@@ -196,7 +199,7 @@ public sealed class GestureEngine : IDisposable
                 // 让 hook 线程立刻返回继续接事件。
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    RunGesture(capturedPoints, capturedStartWin, capturedPrefs, capturedGestures, capturedVersion);
+                    RunGesture(capturedPoints, capturedStartWin, capturedPrefs, snapshot.Gestures, snapshot.Version);
                 });
                 return true;
             }
@@ -217,34 +220,49 @@ public sealed class GestureEngine : IDisposable
     {
         try
         {
+            // 候选方向序列写进日志 —— 误识别时一眼能看出"我画的"被识成了什么形状
+            var drawn = _recognizer.DescribeSequence(points);
             var match = _recognizer.BestMatch(points, gestures, version, prefs.RecognitionThreshold);
             if (match is null)
             {
-                Logger.Info($"gesture no match (points={points.Length}, threshold={prefs.RecognitionThreshold:0.00})");
+                Logger.Info($"gesture no match: drawn=[{drawn}] (points={points.Length}, threshold={prefs.RecognitionThreshold:0.00})");
                 return;
             }
 
             var shortcut = match.Command.Shortcut;
             if (shortcut is null)
             {
-                Logger.Info($"gesture matched '{match.Command.Name}' but no shortcut bound");
+                Logger.Info($"gesture matched '{match.Command.Name}' (drawn=[{drawn}]) but no shortcut bound");
                 return;
             }
 
-            Logger.Info($"gesture matched '{match.Command.Name}' (distance={match.Distance:0.000}) → {shortcut.DisplayName}");
+            Logger.Info($"gesture matched '{match.Command.Name}' drawn=[{drawn}] distance={match.Distance:0.000} runnerUp={match.RunnerUpDistance:0.000} → {shortcut.DisplayName}");
 
             var target = WindowTargeter.Resolve(prefs.GestureTargetPolicy, startPointWin);
             WindowTargeter.PrepareForExecution(target);
 
+            // A1:不再固定 Sleep(60)。SetForegroundWindow 后轮询确认目标真的拿到前台,
+            // 拿到就立刻发键(通常 <16ms),最多等 ~150ms 兜底。比死等 60ms 既快又稳:
+            // 快(常见情况几乎不等)、稳(慢的机器也不会因为 60ms 不够而发错窗口)。
             if (target.ShouldActivate)
             {
-                Thread.Sleep(60);
+                WaitForForeground(target.Hwnd, timeoutMs: 150);
             }
             KeyboardSender.Send(shortcut);
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "RunGesture");
+        }
+    }
+
+    /// <summary>轮询等待目标窗口拿到前台,拿到立即返回;超时也返回(已尽力)。</summary>
+    private static void WaitForForeground(IntPtr hwnd, int timeoutMs)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (NativeMethods.GetForegroundWindow() != hwnd && Environment.TickCount64 < deadline)
+        {
+            Thread.Sleep(8);
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
 using Velto.Services;
@@ -7,11 +8,17 @@ namespace Velto;
 
 public partial class App : Application
 {
+    private const string ShowSettingsSignalName = "Velto.ShowSettings";
+
     private HookThread? _hookThread;
     private TrailOverlayWindow? _overlay;
     private GestureEngine? _engine;
     private TrayIcon? _tray;
     private System.Threading.Mutex? _instanceMutex;
+
+    private EventWaitHandle? _showSettingsSignal;
+    private EventWaitHandle? _listenerStopSignal;
+    private Thread? _listenerThread;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -22,7 +29,10 @@ public partial class App : Application
 
         if (!TryAcquireSingleInstance())
         {
-            Logger.Info("另一实例已在运行,退出");
+            // 已经有实例在跑 —— 与其默默退出,不如唤起它的设置窗口。
+            // 这样即便托盘图标被隐藏,用户双击 Velto.exe 也能回到设置。
+            Logger.Info("另一实例已在运行,发信号唤起设置后退出");
+            SignalExistingInstanceToShowSettings();
             Shutdown();
             return;
         }
@@ -43,12 +53,52 @@ public partial class App : Application
             Logger.Info("MouseHook installed on dedicated input thread");
 
             _tray = new TrayIcon(store);
+            StartShowSettingsListener();
             Logger.Info("Tray icon ready,启动完成");
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "OnStartup 致命异常");
             throw;
+        }
+    }
+
+    // ──────────────────────── 第二实例唤起设置 ────────────────────────
+
+    private void StartShowSettingsListener()
+    {
+        _showSettingsSignal = new EventWaitHandle(false, EventResetMode.AutoReset, ShowSettingsSignalName);
+        _listenerStopSignal = new EventWaitHandle(false, EventResetMode.ManualReset);
+
+        _listenerThread = new Thread(() =>
+        {
+            var handles = new WaitHandle[] { _showSettingsSignal, _listenerStopSignal };
+            while (true)
+            {
+                var idx = WaitHandle.WaitAny(handles);
+                if (idx == 1) break; // stop
+                Dispatcher.BeginInvoke(() => _tray?.OpenSettings());
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Velto.ShowSettingsListener",
+        };
+        _listenerThread.Start();
+    }
+
+    private static void SignalExistingInstanceToShowSettings()
+    {
+        try
+        {
+            if (EventWaitHandle.TryOpenExisting(ShowSettingsSignalName, out var handle))
+            {
+                using (handle) handle.Set();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "SignalExistingInstanceToShowSettings");
         }
     }
 
@@ -76,10 +126,13 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         Logger.Info($"Velto exiting (code={e.ApplicationExitCode})");
+        _listenerStopSignal?.Set();
         _tray?.Dispose();
         _hookThread?.Stop();
         _engine?.Dispose();
         _overlay?.Close();
+        _showSettingsSignal?.Dispose();
+        _listenerStopSignal?.Dispose();
         _instanceMutex?.Dispose();
         base.OnExit(e);
     }

@@ -21,6 +21,13 @@ public sealed class MouseHook : IDisposable
     private NativeMethods.LowLevelMouseProc? _proc;
     private IntPtr _hookHandle;
 
+    // dwExtraInfo 在 MSLLHOOKSTRUCT 里的字节偏移(x64 上是 24)。用 OffsetOf 算,避免硬编码出错。
+    private static readonly int ExtraInfoOffset =
+        (int)Marshal.OffsetOf<NativeMethods.MSLLHOOKSTRUCT>(nameof(NativeMethods.MSLLHOOKSTRUCT.dwExtraInfo));
+
+    // 回调异常日志限流:出问题时不要把日志刷爆(钩子在全系统鼠标移动上跑)。
+    private long _lastErrorLogTicks;
+
     /// <summary>
     /// 收到鼠标事件时调,返回 <c>true</c> 表示吞掉该事件。
     /// </summary>
@@ -55,39 +62,56 @@ public sealed class MouseHook : IDisposable
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode < 0)
+        // ┌─ R1:整个回调包在 try/catch 里。低层钩子回调里抛出未捕获异常,会被系统
+        // │   静默卸掉钩子 —— 手势全废且无任何提示。任何情况下都必须把事件放行,
+        // └─  绝不让异常逃逸到内核。
+        try
         {
+            if (nCode < 0)
+            {
+                return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+            }
+
+            // 先用 wParam(消息号)判类型 —— 无关事件(左键/中键/滚轮等)直接放行,
+            // 连结构体都不用碰。P2:绝大多数全系统鼠标事件在这里就走掉了。
+            var kind = wParam.ToInt32() switch
+            {
+                NativeMethods.WM_RBUTTONDOWN => MouseEventKind.RightButtonDown,
+                NativeMethods.WM_RBUTTONUP   => MouseEventKind.RightButtonUp,
+                NativeMethods.WM_MOUSEMOVE   => MouseEventKind.MouseMove,
+                _ => MouseEventKind.Other,
+            };
+            if (kind == MouseEventKind.Other)
+            {
+                return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+            }
+
+            // P2:只读真正要用的 3 个字段,不再 Marshal 整个 MSLLHOOKSTRUCT。
+            // 跳过自己合成的事件(右键回放),避免递归。
+            if (Marshal.ReadIntPtr(lParam, ExtraInfoOffset) == NativeMethods.SyntheticEventMarker)
+            {
+                return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+            }
+            var x = Marshal.ReadInt32(lParam, 0); // POINT.pt.x @ offset 0
+            var y = Marshal.ReadInt32(lParam, 4); // POINT.pt.y @ offset 4
+
+            var consumed = OnEvent?.Invoke(new MouseEvent(kind, x, y)) ?? false;
+            return consumed ? (IntPtr)1 : NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+        }
+        catch (Exception ex)
+        {
+            LogCallbackErrorThrottled(ex);
             return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
         }
+    }
 
-        var data = Marshal.PtrToStructure<NativeMethods.MSLLHOOKSTRUCT>(lParam);
-
-        // 跳过自己合成的事件,避免递归/无限循环
-        if (data.dwExtraInfo == NativeMethods.SyntheticEventMarker)
-        {
-            return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
-        }
-
-        var msg = wParam.ToInt32();
-        var kind = msg switch
-        {
-            NativeMethods.WM_RBUTTONDOWN => MouseEventKind.RightButtonDown,
-            NativeMethods.WM_RBUTTONUP   => MouseEventKind.RightButtonUp,
-            NativeMethods.WM_MOUSEMOVE   => MouseEventKind.MouseMove,
-            _ => MouseEventKind.Other,
-        };
-
-        if (kind == MouseEventKind.Other)
-        {
-            return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
-        }
-
-        var consumed = OnEvent?.Invoke(new MouseEvent(kind, data.pt.X, data.pt.Y)) ?? false;
-        if (consumed)
-        {
-            return (IntPtr)1;
-        }
-        return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+    private void LogCallbackErrorThrottled(Exception ex)
+    {
+        var now = Environment.TickCount64;
+        // 最多每 5 秒记一次,避免高频事件把日志刷爆
+        if (now - _lastErrorLogTicks < 5000) return;
+        _lastErrorLogTicks = now;
+        Logger.Error(ex, "MouseHook.HookCallback");
     }
 }
 

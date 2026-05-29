@@ -190,6 +190,8 @@
                                       Checked="OnPrefsChanged" Unchecked="OnPrefsChanged"/>
                             <CheckBox x:Name="AutoStartCheck" Content="开机自动启动 Velto"
                                       Checked="OnAutoStartChanged" Unchecked="OnAutoStartChanged"/>
+                            <CheckBox x:Name="TrayIconCheck" Content="显示托盘图标"
+                                      Checked="OnTrayIconChanged" Unchecked="OnTrayIconChanged"/>
 
                             <Grid Margin="0,16,0,0">
                                 <Grid.RowDefinitions>

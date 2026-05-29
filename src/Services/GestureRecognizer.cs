@@ -4,87 +4,91 @@ using Velto.Models;
 namespace Velto.Services;
 
 /// <summary>
-/// 移植自 macOS 版 <c>GestureRecognizer.swift</c>:重采样 + 缩放到单位框 + 平移到中心 + 平均欧氏距离匹配。
-/// Windows 版额外校验起点到终点、起始段、结束段的方向,避免相似轨迹抢错命令。
+/// 方向序列识别器 —— 鼠标手势工具的标准做法(Opera / FireGestures / StrokesPlus / WGestures)。
 ///
-/// 调用者只在 UI 线程访问,无锁。
+/// 取代原来从 macOS 版移植的 <c>$1</c> 形状匹配。<c>$1</c> 比的是"整体形状相似度",
+/// 方向相近的简单笔画归一化后点云高度重叠,判定边界薄、易误识别(Ctrl+Tab / Ctrl+T 互抢就是这个原因)。
+/// 方向序列天然尺度无关、位置无关、方向敏感、抗抖动,结构上就不可能把 ↑ 和 ↓、→ 和 →↓ 搞混。
+///
+/// 流程:
+///   1. 按弧长重采样到固定点数(消除画得快/慢导致的点疏密差异)
+///   2. 每段量化到 8 个方向之一(→↘↓↙←↖↑↗)
+///   3. 众数平滑,消除单段方向抖动
+///   4. 游程编码合并连续同向,丢弃过短 run(拐角抖动)
+///   5. 得到方向序列,再用"带方向感知替换代价的归一化编辑距离"比对
+///
+/// 距离语义:0 = 序列完全一致,1 = 完全不同。识别阈值(默认 0.34)= 允许序列里多大比例不一致。
+/// 相邻方向(45°)替换代价 0.25 → 单方向手势容许 ±45° 的画歪,但 90° 以上必然判为不同手势。
+///
+/// 调用者只在 hook 线程 / UI 线程访问,无锁(缓存按 version 失效)。
 /// </summary>
 public sealed class GestureRecognizer
 {
-    private const int    SampleCount       = 64;
+    private const int    ResampleCount     = 64;
     private const double MinimumPathLength = 24;
-    private const double StraightGestureThreshold = 0.92;
-    private const double CurvedGestureThreshold = 0.84;
-    private const double MaxStraightGestureAngle = Math.PI / 6.0;
-    private const double MaxEndpointAngle = Math.PI * 0.44;
-    private const double MaxStartAngle = Math.PI * 0.40;
-    private const double MaxEndAngle = Math.PI * 0.40;
-    private const double MinimumCommandScoreGap = 0.045;
-    private const double RelativeCommandScoreGap = 0.18;
+
+    /// <summary>众数平滑窗口(奇数)。消除单段方向抖动。</summary>
+    private const int SmoothingWindow = 3;
+
+    /// <summary>一个方向 run 至少占这么多段,否则当拐角抖动丢弃。63 段里 4 段 ≈ 6%。</summary>
+    private const int MinRunSegments = 4;
+
+    // runner-up 安全间隔:最优与次优太接近就拒绝,避免模棱两可时乱触发。
+    private const double MinimumCommandScoreGap  = 0.05;
+    private const double RelativeCommandScoreGap = 0.20;
 
     private ulong _cachedVersion;
     private List<TemplateEntry> _cachedTemplates = new();
 
     public sealed record Match(GestureCommand Command, double Distance, double? RunnerUpDistance = null);
 
-    private sealed record TemplateEntry(GestureCommand Command, Point[] Points, GestureFeatures Features);
-
-    private readonly record struct GestureFeatures(
-        Vector Direction,
-        Vector StartDirection,
-        Vector EndDirection,
-        double Straightness,
-        double AspectRatio);
+    private sealed record TemplateEntry(GestureCommand Command, int[] Sequence);
 
     public Match? BestCandidate(IReadOnlyList<Point> points, IReadOnlyList<GestureCommand> commands, ulong version)
     {
-        var pathLen = PathLength(points);
-        if (pathLen < MinimumPathLength)
+        var candidate = BuildSequence(points);
+        if (candidate is null || candidate.Length == 0)
         {
             return null;
         }
 
-        var candidate = Normalize(points, pathLen);
-        if (candidate is null)
-        {
-            return null;
-        }
-
-        var candidateFeatures = ExtractFeatures(candidate);
-        var bestByCommand = new Dictionary<Guid, Match>();
+        // 每个命令取它所有样本里最接近的那个距离
+        var bestByCommand = new Dictionary<Guid, double>();
+        var commandRef = new Dictionary<Guid, GestureCommand>();
         foreach (var template in NormalizedTemplates(commands, version))
         {
-            var command = template.Command;
-            var d = AdjustedDistance(candidate, template.Points, candidateFeatures, template.Features);
-            if (double.IsPositiveInfinity(d))
+            if (template.Sequence.Length == 0) continue;
+            var d = SequenceDistance(candidate, template.Sequence);
+            if (!bestByCommand.TryGetValue(template.Command.Id, out var existing) || d < existing)
             {
-                continue;
-            }
-
-            if (!bestByCommand.TryGetValue(command.Id, out var existing) || d < existing.Distance)
-            {
-                bestByCommand[command.Id] = new Match(command, d);
+                bestByCommand[template.Command.Id] = d;
+                commandRef[template.Command.Id] = template.Command;
             }
         }
 
-        Match? best = null;
-        Match? runnerUp = null;
-        foreach (var match in bestByCommand.Values)
+        if (bestByCommand.Count == 0) return null;
+
+        Guid bestId = default;
+        double bestD = double.PositiveInfinity;
+        double runnerUpD = double.PositiveInfinity;
+        foreach (var kv in bestByCommand)
         {
-            if (best is null || match.Distance < best.Distance)
+            if (kv.Value < bestD)
             {
-                runnerUp = best;
-                best = match;
+                runnerUpD = bestD;
+                bestD = kv.Value;
+                bestId = kv.Key;
             }
-            else if (runnerUp is null || match.Distance < runnerUp.Distance)
+            else if (kv.Value < runnerUpD)
             {
-                runnerUp = match;
+                runnerUpD = kv.Value;
             }
         }
 
-        return best is null
-            ? null
-            : best with { RunnerUpDistance = runnerUp?.Distance };
+        return new Match(
+            commandRef[bestId],
+            bestD,
+            double.IsPositiveInfinity(runnerUpD) ? null : runnerUpD);
     }
 
     public Match? BestMatch(
@@ -103,33 +107,21 @@ public sealed class GestureRecognizer
             var requiredGap = Math.Max(MinimumCommandScoreGap, best.Distance * RelativeCommandScoreGap);
             if (runnerUp - best.Distance < requiredGap)
             {
-                return null;
+                return null; // 跟次优太接近 → 模棱两可,宁可不触发
             }
         }
         return best;
     }
 
-    /// <summary>外部调用 —— 比如设置 UI 想画出"识别归一化后"的样子时用。</summary>
-    public Point[]? Normalize(IReadOnlyList<Point> points)
-        => Normalize(points, null);
-
-    private Point[]? Normalize(IReadOnlyList<Point> points, double? knownPathLength)
+    /// <summary>调试用:把笔画转成可读方向串,如 "→ ↓"。日志里看误识别非常直观。</summary>
+    public string DescribeSequence(IReadOnlyList<Point> points)
     {
-        if (points.Count < 2)
-        {
-            return null;
-        }
-
-        var resampled = Resample(points, SampleCount, knownPathLength);
-        var scaled = ScaleToUnitBox(resampled);
-        if (scaled is null)
-        {
-            return null;
-        }
-
-        TranslateToOrigin(scaled);
-        return scaled;
+        var seq = BuildSequence(points);
+        if (seq is null || seq.Length == 0) return "(空)";
+        return string.Join(" ", seq.Select(DirectionGlyph));
     }
+
+    // ───────────────────────── 模板缓存 ─────────────────────────
 
     private List<TemplateEntry> NormalizedTemplates(IReadOnlyList<GestureCommand> commands, ulong version)
     {
@@ -149,10 +141,10 @@ public sealed class GestureRecognizer
                 {
                     pts[i] = new Point(template[i].X, template[i].Y);
                 }
-                var normalized = Normalize(pts, null);
-                if (normalized is not null)
+                var seq = BuildSequence(pts);
+                if (seq is not null && seq.Length > 0)
                 {
-                    list.Add(new TemplateEntry(command, normalized, ExtractFeatures(normalized)));
+                    list.Add(new TemplateEntry(command, seq));
                 }
             }
         }
@@ -162,13 +154,164 @@ public sealed class GestureRecognizer
         return list;
     }
 
-    private static Point[] Resample(IReadOnlyList<Point> points, int targetCount, double? knownPathLength)
+    // ───────────────────────── 序列构建 ─────────────────────────
+
+    private static int[]? BuildSequence(IReadOnlyList<Point> points)
+    {
+        if (points.Count < 2) return null;
+        var pathLen = PathLength(points);
+        if (pathLen < MinimumPathLength) return null;
+
+        var resampled = Resample(points, ResampleCount, pathLen);
+        if (resampled.Length < 2) return null;
+
+        // 1. 逐段量化方向
+        var dirs = new int[resampled.Length - 1];
+        for (int i = 0; i < dirs.Length; i++)
+        {
+            dirs[i] = Quantize8(resampled[i + 1].X - resampled[i].X, resampled[i + 1].Y - resampled[i].Y);
+        }
+
+        // 2. 众数平滑去抖
+        Smooth(dirs, SmoothingWindow);
+
+        // 3. 游程编码
+        var runs = RunLengthEncode(dirs);
+
+        // 4. 丢弃过短 run(拐角抖动),丢完相邻同向再合并
+        var filtered = new List<(int dir, int count)>();
+        foreach (var run in runs)
+        {
+            if (run.count < MinRunSegments && runs.Count > 1)
+            {
+                continue;
+            }
+            if (filtered.Count > 0 && filtered[^1].dir == run.dir)
+            {
+                filtered[^1] = (run.dir, filtered[^1].count + run.count);
+            }
+            else
+            {
+                filtered.Add(run);
+            }
+        }
+
+        // 全被当噪声丢光(极短/全程抖动)→ 用最长 run 兜底,至少给个主方向
+        if (filtered.Count == 0)
+        {
+            var longest = runs[0];
+            foreach (var r in runs)
+            {
+                if (r.count > longest.count) longest = r;
+            }
+            filtered.Add(longest);
+        }
+
+        // 5. 输出方向序列(再 collapse 一次相邻同向以防万一)
+        var result = new List<int>(filtered.Count);
+        foreach (var r in filtered)
+        {
+            if (result.Count > 0 && result[^1] == r.dir) continue;
+            result.Add(r.dir);
+        }
+        return result.ToArray();
+    }
+
+    /// <summary>众数滤波:每个位置取窗口内出现最多的方向,平局保留中心方向。消除孤立方向翻转。</summary>
+    private static void Smooth(int[] dirs, int window)
+    {
+        if (dirs.Length < 3 || window < 3) return;
+        var half = window / 2;
+        var copy = (int[])dirs.Clone();
+        Span<int> counts = stackalloc int[8];
+        for (int i = 0; i < dirs.Length; i++)
+        {
+            counts.Clear();
+            int lo = Math.Max(0, i - half);
+            int hi = Math.Min(dirs.Length - 1, i + half);
+            for (int j = lo; j <= hi; j++) counts[copy[j]]++;
+
+            int best = copy[i];
+            int bestCount = counts[copy[i]];
+            for (int d = 0; d < 8; d++)
+            {
+                if (counts[d] > bestCount) { bestCount = counts[d]; best = d; }
+            }
+            dirs[i] = best;
+        }
+    }
+
+    private static List<(int dir, int count)> RunLengthEncode(int[] dirs)
+    {
+        var runs = new List<(int, int)>();
+        if (dirs.Length == 0) return runs;
+        int cur = dirs[0], count = 1;
+        for (int i = 1; i < dirs.Length; i++)
+        {
+            if (dirs[i] == cur) { count++; }
+            else { runs.Add((cur, count)); cur = dirs[i]; count = 1; }
+        }
+        runs.Add((cur, count));
+        return runs;
+    }
+
+    /// <summary>8 方向量化。Y 轴向下(屏幕/画布坐标),候选与模板同一约定。</summary>
+    private static int Quantize8(double dx, double dy)
+    {
+        var angle = Math.Atan2(dy, dx); // -π..π
+        var idx = (int)Math.Round(angle / (Math.PI / 4.0));
+        return ((idx % 8) + 8) % 8;
+    }
+
+    /// <summary>编辑距离(带方向感知替换代价),按较长序列长度归一化到 [0,1]。</summary>
+    private static double SequenceDistance(int[] a, int[] b)
+    {
+        int n = a.Length, m = b.Length;
+        if (n == 0 && m == 0) return 0;
+        if (n == 0 || m == 0) return 1;
+
+        var dp = new double[n + 1, m + 1];
+        for (int i = 0; i <= n; i++) dp[i, 0] = i; // 删除,每个 1
+        for (int j = 0; j <= m; j++) dp[0, j] = j; // 插入,每个 1
+
+        for (int i = 1; i <= n; i++)
+        {
+            for (int j = 1; j <= m; j++)
+            {
+                var sub = dp[i - 1, j - 1] + SubstitutionCost(a[i - 1], b[j - 1]);
+                var del = dp[i - 1, j] + 1;
+                var ins = dp[i, j - 1] + 1;
+                dp[i, j] = Math.Min(sub, Math.Min(del, ins));
+            }
+        }
+        return dp[n, m] / Math.Max(n, m);
+    }
+
+    /// <summary>替换代价:同向 0,相邻 45° 便宜(0.25),相反 180° 最贵(1.0)。</summary>
+    private static double SubstitutionCost(int a, int b)
+    {
+        if (a == b) return 0;
+        int diff = Math.Abs(a - b);
+        int circular = Math.Min(diff, 8 - diff); // 0..4 个 45° 步
+        return circular / 4.0;
+    }
+
+    private static string DirectionGlyph(int d) => d switch
+    {
+        0 => "→", 1 => "↘", 2 => "↓", 3 => "↙",
+        4 => "←", 5 => "↖", 6 => "↑", 7 => "↗",
+        _ => "?",
+    };
+
+    // ───────────────────────── 几何工具(沿用) ─────────────────────────
+
+    private static Point[] Resample(IReadOnlyList<Point> points, int targetCount, double knownPathLength)
     {
         if (points.Count == 0) return Array.Empty<Point>();
         var first = points[0];
         if (targetCount <= 1) return new[] { first };
 
-        var total = knownPathLength ?? PathLength(points);
+        var total = knownPathLength;
         if (total <= 0)
         {
             var filled = new Point[targetCount];
@@ -194,10 +337,7 @@ public sealed class GestureRecognizer
                     segmentStart.X + ratio * (segmentEnd.X - segmentStart.X),
                     segmentStart.Y + ratio * (segmentEnd.Y - segmentStart.Y));
                 result.Add(p);
-                if (result.Count == targetCount)
-                {
-                    return result.ToArray();
-                }
+                if (result.Count == targetCount) return result.ToArray();
 
                 segmentStart = p;
                 remaining = Distance(segmentStart, segmentEnd);
@@ -208,62 +348,9 @@ public sealed class GestureRecognizer
             segmentStart = segmentEnd;
         }
 
-        // 浮点累积误差可能导致 result 没填满,用最后一点补齐 —— 与 macOS 版一致。
         var pad = points[^1];
-        while (result.Count < targetCount)
-        {
-            result.Add(pad);
-        }
+        while (result.Count < targetCount) result.Add(pad);
         return result.ToArray();
-    }
-
-    private static Point[]? ScaleToUnitBox(Point[] points)
-    {
-        if (points.Length == 0) return null;
-
-        double minX = points[0].X, maxX = points[0].X;
-        double minY = points[0].Y, maxY = points[0].Y;
-        foreach (var p in points)
-        {
-            if (p.X < minX) minX = p.X;
-            if (p.X > maxX) maxX = p.X;
-            if (p.Y < minY) minY = p.Y;
-            if (p.Y > maxY) maxY = p.Y;
-        }
-
-        var scale = Math.Max(maxX - minX, maxY - minY);
-        if (scale < 0.0001) return null;
-
-        var result = new Point[points.Length];
-        for (int i = 0; i < points.Length; i++)
-        {
-            result[i] = new Point((points[i].X - minX) / scale, (points[i].Y - minY) / scale);
-        }
-        return result;
-    }
-
-    private static void TranslateToOrigin(Point[] points)
-    {
-        double sx = 0, sy = 0;
-        foreach (var p in points) { sx += p.X; sy += p.Y; }
-        var cx = sx / points.Length;
-        var cy = sy / points.Length;
-        for (int i = 0; i < points.Length; i++)
-        {
-            points[i] = new Point(points[i].X - cx, points[i].Y - cy);
-        }
-    }
-
-    private static double AverageDistance(Point[] left, Point[] right)
-    {
-        var count = Math.Min(left.Length, right.Length);
-        if (count == 0) return double.MaxValue;
-        double total = 0;
-        for (int i = 0; i < count; i++)
-        {
-            total += Distance(left[i], right[i]);
-        }
-        return total / count;
     }
 
     private static double PathLength(IReadOnlyList<Point> points)
@@ -282,101 +369,5 @@ public sealed class GestureRecognizer
         var dx = a.X - b.X;
         var dy = a.Y - b.Y;
         return Math.Sqrt(dx * dx + dy * dy);
-    }
-
-    private static GestureFeatures ExtractFeatures(Point[] points)
-    {
-        if (points.Length < 2)
-        {
-            return new GestureFeatures(default, default, default, 0, 1);
-        }
-
-        var direct = points[^1] - points[0];
-        var direction = NormalizeVector(direct);
-        var segmentLength = Math.Clamp(points.Length / 5, 4, 14);
-        var startDirection = NormalizeVector(points[Math.Min(points.Length - 1, segmentLength)] - points[0]);
-        var endDirection = NormalizeVector(points[^1] - points[Math.Max(0, points.Length - 1 - segmentLength)]);
-        var pathLength = PathLength(points);
-        var straightness = pathLength > 0.0001 ? Math.Min(1, direct.Length / pathLength) : 0;
-
-        double minX = points[0].X, maxX = points[0].X;
-        double minY = points[0].Y, maxY = points[0].Y;
-        foreach (var p in points)
-        {
-            if (p.X < minX) minX = p.X;
-            if (p.X > maxX) maxX = p.X;
-            if (p.Y < minY) minY = p.Y;
-            if (p.Y > maxY) maxY = p.Y;
-        }
-
-        var width = Math.Max(0.001, maxX - minX);
-        var height = Math.Max(0.001, maxY - minY);
-        return new GestureFeatures(direction, startDirection, endDirection, straightness, width / height);
-    }
-
-    private static double AdjustedDistance(
-        Point[] candidate,
-        Point[] template,
-        GestureFeatures candidateFeatures,
-        GestureFeatures templateFeatures)
-    {
-        var endpointAngle = AngleBetween(candidateFeatures.Direction, templateFeatures.Direction);
-        if (endpointAngle > MaxEndpointAngle)
-        {
-            return double.PositiveInfinity;
-        }
-
-        var startAngle = AngleBetween(candidateFeatures.StartDirection, templateFeatures.StartDirection);
-        if (startAngle > MaxStartAngle)
-        {
-            return double.PositiveInfinity;
-        }
-
-        var endAngle = AngleBetween(candidateFeatures.EndDirection, templateFeatures.EndDirection);
-        if (endAngle > MaxEndAngle)
-        {
-            return double.PositiveInfinity;
-        }
-
-        var candidateIsStraight = candidateFeatures.Straightness >= StraightGestureThreshold;
-        var templateIsStraight = templateFeatures.Straightness >= StraightGestureThreshold;
-        if (candidateIsStraight && templateIsStraight && endpointAngle > MaxStraightGestureAngle)
-        {
-            return double.PositiveInfinity;
-        }
-
-        var score = AverageDistance(candidate, template);
-        score += endpointAngle / Math.PI * 0.20;
-        score += startAngle / Math.PI * 0.18;
-        score += endAngle / Math.PI * 0.18;
-
-        if (candidateIsStraight != templateIsStraight)
-        {
-            var curved = candidateIsStraight ? templateFeatures.Straightness : candidateFeatures.Straightness;
-            if (curved <= CurvedGestureThreshold)
-            {
-                score += 0.16;
-            }
-        }
-
-        var aspectDelta = Math.Abs(Math.Log(candidateFeatures.AspectRatio) - Math.Log(templateFeatures.AspectRatio));
-        score += Math.Min(aspectDelta, 1.5) * 0.04;
-        return score;
-    }
-
-    private static Vector NormalizeVector(Vector vector)
-    {
-        return vector.Length > 0.0001 ? vector / vector.Length : default;
-    }
-
-    private static double AngleBetween(Vector a, Vector b)
-    {
-        if (a.Length < 0.0001 || b.Length < 0.0001)
-        {
-            return 0;
-        }
-
-        var dot = Math.Clamp((a.X * b.X + a.Y * b.Y) / (a.Length * b.Length), -1, 1);
-        return Math.Acos(dot);
     }
 }

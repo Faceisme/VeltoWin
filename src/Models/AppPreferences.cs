@@ -16,7 +16,9 @@ public enum GestureTargetPolicy
 public sealed class AppPreferences
 {
     public bool GesturesEnabled { get; set; } = true;
-    public bool ShowTrail { get; set; } = true;
+    // 默认关闭轨迹反馈:绘制轨迹要在每个 mousemove 上跨线程推数据,关掉后
+    // 钩子线程的热路径只剩记录点(便宜)。需要可视反馈的用户可在设置里打开。
+    public bool ShowTrail { get; set; } = false;
     public bool ShowTrayIcon { get; set; } = true;
 
     /// <summary>识别阈值。值越小越严格。macOS 版默认 0.34。</summary>

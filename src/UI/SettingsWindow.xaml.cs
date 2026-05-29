@@ -112,6 +112,7 @@ public partial class SettingsWindow : Window
     {
         EnabledCheck.IsChecked = _draftPreferences.GesturesEnabled;
         TrailCheck.IsChecked = _draftPreferences.ShowTrail;
+        TrayIconCheck.IsChecked = _draftPreferences.ShowTrayIcon;
         AutoStartCheck.IsChecked = _draftAutoStart;
         ThresholdSlider.Value = _draftPreferences.RecognitionThreshold;
         ThresholdLabel.Text = _draftPreferences.RecognitionThreshold.ToString("0.00");
@@ -249,6 +250,24 @@ public partial class SettingsWindow : Window
     {
         if (_suppressEvents) return;
         _draftAutoStart = AutoStartCheck.IsChecked == true;
+        MarkDirty();
+    }
+
+    private void OnTrayIconChanged(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var show = TrayIconCheck.IsChecked == true;
+        _draftPreferences.ShowTrayIcon = show;
+        if (!show)
+        {
+            // 隐藏托盘后必须告诉用户怎么回来,否则等于把设置入口锁死了。
+            MessageBox.Show(
+                this,
+                "保存后托盘图标会隐藏。\n\n要再次打开本设置窗口,直接重新运行 Velto(双击 Velto.exe)即可 —— 已在运行的实例会把设置窗口唤起。",
+                "Velto",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
         MarkDirty();
     }
 

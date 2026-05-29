@@ -43,7 +43,32 @@ public sealed class TrayIcon : IDisposable
         _messageSource.AddHook(WndProc);
 
         (_iconHandle, _ownsIconHandle) = LoadTrayIcon();
-        AddTrayIcon();
+        if (_store.Preferences.ShowTrayIcon)
+        {
+            AddTrayIcon();
+        }
+
+        // 保存设置后(ReplaceSettings 触发 Changed)同步托盘显隐
+        _store.Changed += _ => SetVisible(_store.Preferences.ShowTrayIcon);
+    }
+
+    /// <summary>被 App 的"再次启动 → 唤起设置"信号调用,即使托盘隐藏也能回到设置。</summary>
+    public void OpenSettings() => ShowSettings();
+
+    /// <summary>按偏好显示/隐藏托盘图标。隐藏只是从通知区移除,进程和手势照常工作。</summary>
+    public void SetVisible(bool visible)
+    {
+        if (visible == _iconAdded) return;
+        if (visible) AddTrayIcon();
+        else RemoveTrayIcon();
+    }
+
+    private void RemoveTrayIcon()
+    {
+        if (!_iconAdded) return;
+        var data = CreateNotifyIconData();
+        NativeMethods.Shell_NotifyIconW(NativeMethods.NIM_DELETE, ref data);
+        _iconAdded = false;
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
