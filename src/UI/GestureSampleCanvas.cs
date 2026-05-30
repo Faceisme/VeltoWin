@@ -25,10 +25,11 @@ public sealed class GestureSampleCanvas : Border
 
     public GestureSampleCanvas()
     {
-        Background = new SolidColorBrush(Color.FromRgb(0xFA, 0xFA, 0xFA));
-        BorderBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0));
+        // 画布表面走主题资源,深浅色自动适配
+        SetResourceReference(BackgroundProperty, "SystemControlBackgroundChromeMediumLowBrush");
+        SetResourceReference(BorderBrushProperty, "SystemControlForegroundBaseLowBrush");
         BorderThickness = new Thickness(1);
-        CornerRadius = new CornerRadius(6);
+        CornerRadius = new CornerRadius(8);
         ClipToBounds = true;
         MinHeight = 200;
 

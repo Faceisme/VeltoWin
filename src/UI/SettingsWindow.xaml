@@ -1,103 +1,110 @@
 <Window x:Class="Velto.UI.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:ui="clr-namespace:Velto.UI"
+        xmlns:ui="http://schemas.modernwpf.com/2019"
+        xmlns:local="clr-namespace:Velto.UI"
         Title="Velto 设置"
-        Width="980" Height="660"
-        MinWidth="840" MinHeight="560"
+        Width="1000" Height="680"
+        MinWidth="860" MinHeight="580"
         WindowStartupLocation="CenterScreen"
         FontFamily="Segoe UI, Microsoft YaHei UI"
         FontSize="13"
-        Background="#F4F6F8"
+        Background="Transparent"
+        Foreground="{DynamicResource TextFillColorPrimaryBrush}"
         Closing="OnWindowClosing">
 
     <Window.Resources>
-        <SolidColorBrush x:Key="PanelBrush" Color="#FDFEFF"/>
-        <SolidColorBrush x:Key="BorderBrushSoft" Color="#D7DEE8"/>
-        <SolidColorBrush x:Key="MutedTextBrush" Color="#667085"/>
-
-        <Style TargetType="{x:Type Button}">
-            <Setter Property="MinHeight" Value="32"/>
-            <Setter Property="MinWidth" Value="76"/>
-            <Setter Property="Padding" Value="14,5"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+            <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
         </Style>
 
-        <Style x:Key="PrimaryButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Background" Value="#2563EB"/>
-            <Setter Property="BorderBrush" Value="#1D4ED8"/>
-            <Setter Property="Foreground" Value="White"/>
+        <Style x:Key="MutedText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
         </Style>
 
-        <Style x:Key="DangerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Foreground" Value="#B42318"/>
+        <Style x:Key="SectionTitle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,14"/>
         </Style>
 
-        <Style TargetType="{x:Type TextBox}">
-            <Setter Property="MinHeight" Value="34"/>
-            <Setter Property="Padding" Value="8,5"/>
-            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}"/>
+        <!-- 卡片:半透明填充,让底层 Mica 云母材质透出来 -->
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Background" Value="White"/>
-            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="20"/>
         </Style>
 
-        <Style TargetType="{x:Type ComboBox}">
-            <Setter Property="MinHeight" Value="32"/>
-            <Setter Property="VerticalContentAlignment" Value="Center"/>
-        </Style>
-
-        <Style TargetType="{x:Type CheckBox}">
-            <Setter Property="Margin" Value="0,5"/>
-            <Setter Property="VerticalContentAlignment" Value="Center"/>
-        </Style>
-
-        <Style TargetType="{x:Type ListBoxItem}">
-            <Setter Property="Margin" Value="0,0,0,6"/>
-            <Setter Property="Padding" Value="10,8"/>
-            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <!-- 设置项一行:底部分隔线的列表观感 -->
+        <Style x:Key="SettingRow" TargetType="Border">
+            <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="Padding" Value="0,12"/>
         </Style>
     </Window.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0">
+        <!-- ───────── 顶部标题栏 ───────── -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="24,18,24,10" VerticalAlignment="Center">
+            <Image Width="26" Height="26" Margin="0,0,12,0"
+                   Source="pack://application:,,,/Resources/Velto.png"
+                   RenderOptions.BitmapScalingMode="HighQuality"/>
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="Velto 鼠标手势" FontSize="17" FontWeight="SemiBold"/>
+                <TextBlock Text="按住右键画出手势,触发对应快捷键" Style="{StaticResource MutedText}"
+                           FontSize="12" Margin="0,1,0,0"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- ───────── 主体:左手势列表 + 右详情 ───────── -->
+        <Grid Grid.Row="1" Margin="16,4,16,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300"/>
+                <ColumnDefinition Width="290"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Background="#F9FAFB" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="0,0,1,0">
+            <!-- 左侧:手势列表卡片 -->
+            <Border Grid.Column="0" Style="{StaticResource Card}" Padding="0" Margin="8,4,8,8">
                 <DockPanel LastChildFill="True">
-                    <Grid DockPanel.Dock="Top" Margin="18,16,18,12">
+                    <Grid DockPanel.Dock="Top" Margin="16,14,16,10">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock Text="鼠标手势" FontSize="18" FontWeight="SemiBold"/>
-                            <TextBlock Text="选择一个手势进行编辑" Foreground="{StaticResource MutedTextBrush}" Margin="0,3,0,0"/>
-                        </StackPanel>
-                        <Button Grid.Column="1" Content="新建" Click="OnAddGesture"/>
+                        <TextBlock Text="手势" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <Button Grid.Column="1" Content="＋ 新建" Click="OnAddGesture"/>
                     </Grid>
 
-                    <Border DockPanel.Dock="Bottom" Padding="18,12" BorderBrush="{StaticResource BorderBrushSoft}"
-                            BorderThickness="0,1,0,0" Background="#F4F6F8">
+                    <Border DockPanel.Dock="Bottom" Padding="12,10"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
                         <UniformGrid Columns="2">
-                            <Button Content="导入..." Margin="0,0,6,0" Click="OnImport"/>
-                            <Button Content="导出..." Margin="6,0,0,0" Click="OnExport"/>
+                            <Button Content="导入…" Margin="0,0,5,0" HorizontalAlignment="Stretch" Click="OnImport"/>
+                            <Button Content="导出…" Margin="5,0,0,0" HorizontalAlignment="Stretch" Click="OnExport"/>
                         </UniformGrid>
                     </Border>
 
                     <ListBox x:Name="GestureList"
-                             Margin="12,0,12,12"
+                             Margin="8,0,8,8"
                              BorderThickness="0"
                              Background="Transparent"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              SelectionChanged="OnGestureSelectionChanged">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                <Setter Property="Padding" Value="12,9"/>
+                                <Setter Property="Margin" Value="0,2"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <Grid>
@@ -106,8 +113,9 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Grid.Row="1" Text="{Binding ShortcutDisplay}" Foreground="{StaticResource MutedTextBrush}"
-                                               FontSize="12" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Grid.Row="1" Text="{Binding ShortcutDisplay}"
+                                               Style="{StaticResource MutedText}"
+                                               FontSize="12" Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -115,20 +123,13 @@
                 </DockPanel>
             </Border>
 
-            <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Background="#F4F6F8">
-                <StackPanel Margin="24,20,24,24" x:Name="DetailRoot">
+            <!-- 右侧:详情 + 通用设置 -->
+            <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Padding="8,4,8,8">
+                <StackPanel x:Name="DetailRoot">
 
-                    <Border x:Name="DetailPanel" Background="{StaticResource PanelBrush}" CornerRadius="8"
-                            BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1"
-                            Padding="20" Visibility="Collapsed">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-
+                    <!-- 选中手势的详情卡片 -->
+                    <Border x:Name="DetailPanel" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -136,113 +137,159 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBox x:Name="NameBox" Grid.Column="0" FontSize="18" FontWeight="SemiBold"
                                          TextChanged="OnNameChanged"/>
-                                <Button Grid.Column="1" Content="删除手势" Margin="12,0,0,0"
-                                        Style="{StaticResource DangerButtonStyle}" Click="OnDeleteGesture"/>
+                                <Button Grid.Column="1" Content="删除" Margin="12,0,0,0"
+                                        Foreground="{DynamicResource SystemFillColorCriticalBrush}"
+                                        Click="OnDeleteGesture"/>
                             </Grid>
 
-                            <Grid Grid.Row="1" Margin="0,18,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="120"/>
-                                    <ColumnDefinition Width="260"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="快捷键" Foreground="{StaticResource MutedTextBrush}"
-                                           VerticalAlignment="Center"/>
-                                <ui:ShortcutRecorderBox x:Name="ShortcutBox" Grid.Column="1" HorizontalAlignment="Stretch"/>
-                            </Grid>
+                            <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                                <TextBlock Text="快捷键" Style="{StaticResource MutedText}"
+                                           VerticalAlignment="Center" Width="100"/>
+                                <local:ShortcutRecorderBox x:Name="ShortcutBox" Width="260" HorizontalAlignment="Left"/>
+                            </StackPanel>
 
-                            <Grid Grid.Row="2" Margin="0,22,0,8">
+                            <Grid Margin="0,22,0,8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
                                     <TextBlock Text="手势样本" FontWeight="SemiBold"/>
-                                    <TextBlock Text="在画布上按住右键拖动,可录入多个样本(与实际触发手势一致)" Foreground="{StaticResource MutedTextBrush}"
-                                               Margin="0,3,0,0"/>
+                                    <TextBlock Text="在下方画布按住右键拖动录入,可录多个样本(与实际触发一致)"
+                                               Style="{StaticResource MutedText}" FontSize="12" Margin="0,2,0,0"/>
                                 </StackPanel>
-                                <Button Grid.Column="1" Content="清空样本" Click="OnClearSamples"/>
+                                <Button Grid.Column="1" Content="清空样本" VerticalAlignment="Top" Click="OnClearSamples"/>
                             </Grid>
 
-                            <StackPanel Grid.Row="3">
-                                <ui:GestureSampleCanvas x:Name="SampleCanvas" Height="220"/>
-                                <TextBlock x:Name="SampleCount" Text="0 个样本" Foreground="{StaticResource MutedTextBrush}"
-                                           HorizontalAlignment="Right" Margin="0,8,0,0"/>
-                            </StackPanel>
-                        </Grid>
+                            <local:GestureSampleCanvas x:Name="SampleCanvas" Height="240"/>
+                            <TextBlock x:Name="SampleCount" Text="0 个样本" Style="{StaticResource MutedText}"
+                                       FontSize="12" HorizontalAlignment="Right" Margin="0,8,0,0"/>
+                        </StackPanel>
                     </Border>
 
-                    <Border x:Name="EmptyHint" Background="{StaticResource PanelBrush}" CornerRadius="8"
-                            BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" Padding="20"
-                            Visibility="Visible">
-                        <TextBlock Text="选择左侧的手势,或点击「新建」创建一个。" Foreground="{StaticResource MutedTextBrush}"/>
+                    <!-- 未选中时的占位 -->
+                    <Border x:Name="EmptyHint" Style="{StaticResource Card}" Visibility="Visible">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,40">
+                            <TextBlock Text="✋" FontSize="32" HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                            <TextBlock Text="选择左侧的手势进行编辑,或点击「＋ 新建」创建一个"
+                                       Style="{StaticResource MutedText}" HorizontalAlignment="Center"/>
+                        </StackPanel>
                     </Border>
 
-                    <Border Background="{StaticResource PanelBrush}" CornerRadius="8"
-                            BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1"
-                            Padding="20" Margin="0,16,0,0">
+                    <!-- 通用设置卡片 -->
+                    <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                         <StackPanel>
-                            <TextBlock Text="通用" FontWeight="SemiBold" FontSize="15" Margin="0,0,0,12"/>
+                            <TextBlock Text="通用设置" Style="{StaticResource SectionTitle}"/>
 
-                            <CheckBox x:Name="EnabledCheck" Content="启用鼠标手势"
-                                      Checked="OnPrefsChanged" Unchecked="OnPrefsChanged"/>
-                            <CheckBox x:Name="TrailCheck" Content="绘制时显示轨迹反馈"
-                                      Checked="OnPrefsChanged" Unchecked="OnPrefsChanged"/>
-                            <CheckBox x:Name="AutoStartCheck" Content="开机自动启动 Velto"
-                                      Checked="OnAutoStartChanged" Unchecked="OnAutoStartChanged"/>
-                            <CheckBox x:Name="TrayIconCheck" Content="显示托盘图标"
-                                      Checked="OnTrayIconChanged" Unchecked="OnTrayIconChanged"/>
+                            <Border Style="{StaticResource SettingRow}">
+                                <Grid>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="启用鼠标手势"/>
+                                        <TextBlock Text="关闭后右键恢复为系统默认行为" Style="{StaticResource MutedText}" FontSize="12" Margin="0,1,0,0"/>
+                                    </StackPanel>
+                                    <ui:ToggleSwitch x:Name="EnabledCheck" HorizontalAlignment="Right" OnContent="" OffContent=""
+                                                     Toggled="OnPrefsChanged"/>
+                                </Grid>
+                            </Border>
 
-                            <Grid Margin="0,16,0,0">
+                            <Border Style="{StaticResource SettingRow}">
+                                <Grid>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="绘制时显示轨迹反馈"/>
+                                        <TextBlock Text="画手势时在屏幕上显示拖动轨迹" Style="{StaticResource MutedText}" FontSize="12" Margin="0,1,0,0"/>
+                                    </StackPanel>
+                                    <ui:ToggleSwitch x:Name="TrailCheck" HorizontalAlignment="Right" OnContent="" OffContent=""
+                                                     Toggled="OnPrefsChanged"/>
+                                </Grid>
+                            </Border>
+
+                            <Border Style="{StaticResource SettingRow}">
+                                <Grid>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="开机自动启动"/>
+                                        <TextBlock Text="登录 Windows 时自动运行 Velto" Style="{StaticResource MutedText}" FontSize="12" Margin="0,1,0,0"/>
+                                    </StackPanel>
+                                    <ui:ToggleSwitch x:Name="AutoStartCheck" HorizontalAlignment="Right" OnContent="" OffContent=""
+                                                     Toggled="OnAutoStartChanged"/>
+                                </Grid>
+                            </Border>
+
+                            <Border Style="{StaticResource SettingRow}" BorderThickness="0">
+                                <Grid>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="显示托盘图标"/>
+                                        <TextBlock Text="隐藏后可在开始菜单搜索 Velto 重新打开设置" Style="{StaticResource MutedText}" FontSize="12" Margin="0,1,0,0"/>
+                                    </StackPanel>
+                                    <ui:ToggleSwitch x:Name="TrayIconCheck" HorizontalAlignment="Right" OnContent="" OffContent=""
+                                                     Toggled="OnTrayIconChanged"/>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 识别参数卡片 -->
+                    <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                        <StackPanel>
+                            <TextBlock Text="识别" Style="{StaticResource SectionTitle}"/>
+
+                            <Grid Margin="0,0,0,4">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="180"/>
+                                    <ColumnDefinition Width="200"/>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="60"/>
+                                    <ColumnDefinition Width="56"/>
                                 </Grid.ColumnDefinitions>
 
                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="识别阈值(越小越严格)" VerticalAlignment="Center"/>
                                 <Slider x:Name="ThresholdSlider" Grid.Row="0" Grid.Column="1" Minimum="0.05" Maximum="0.40"
                                         TickFrequency="0.025" SmallChange="0.01" LargeChange="0.05"
-                                        ValueChanged="OnThresholdChanged" Margin="12,0"/>
+                                        ValueChanged="OnThresholdChanged" Margin="12,0" VerticalAlignment="Center"/>
                                 <TextBlock Grid.Row="0" Grid.Column="2" x:Name="ThresholdLabel" VerticalAlignment="Center"
-                                           TextAlignment="Right"/>
+                                           TextAlignment="Right" Style="{StaticResource MutedText}"/>
 
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="手势超时秒数" VerticalAlignment="Center" Margin="0,12,0,0"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="手势超时秒数" VerticalAlignment="Center" Margin="0,14,0,0"/>
                                 <Slider x:Name="TimeoutSlider" Grid.Row="1" Grid.Column="1" Minimum="0.5" Maximum="10"
                                         TickFrequency="0.5" SmallChange="0.1" LargeChange="0.5"
-                                        ValueChanged="OnTimeoutChanged" Margin="12,12,12,0"/>
+                                        ValueChanged="OnTimeoutChanged" Margin="12,14,12,0" VerticalAlignment="Center"/>
                                 <TextBlock Grid.Row="1" Grid.Column="2" x:Name="TimeoutLabel" VerticalAlignment="Center"
-                                           TextAlignment="Right" Margin="0,12,0,0"/>
+                                           TextAlignment="Right" Margin="0,14,0,0" Style="{StaticResource MutedText}"/>
 
-                                <TextBlock Grid.Row="2" Grid.Column="0" Text="作用目标" VerticalAlignment="Center" Margin="0,14,0,0"/>
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="作用目标" VerticalAlignment="Center" Margin="0,16,0,0"/>
                                 <ComboBox x:Name="TargetCombo" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2"
-                                          Margin="12,14,0,0" SelectionChanged="OnTargetChanged">
+                                          Margin="12,16,0,0" HorizontalAlignment="Left" Width="220"
+                                          SelectionChanged="OnTargetChanged">
                                     <ComboBoxItem Content="光标下的窗口"/>
                                     <ComboBoxItem Content="当前活动窗口"/>
                                 </ComboBox>
                             </Grid>
                         </StackPanel>
                     </Border>
+
+                    <Border Height="8" Background="Transparent"/>
                 </StackPanel>
             </ScrollViewer>
         </Grid>
 
-        <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="0,1,0,0" Padding="18,12">
+        <!-- ───────── 底部操作栏 ───────── -->
+        <Border Grid.Row="2" Margin="0,8,0,0"
+                Background="{DynamicResource LayerFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0"
+                Padding="24,12">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="DirtyStatusText" Text="所有修改已保存" Foreground="{StaticResource MutedTextBrush}"
+                <TextBlock x:Name="DirtyStatusText" Text="所有修改已保存" Style="{StaticResource MutedText}"
                            VerticalAlignment="Center"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button x:Name="DiscardButton" Content="弃用修改" Margin="0,0,10,0" Click="OnDiscardChanges"/>
-                    <Button x:Name="SaveButton" Content="保存" Style="{StaticResource PrimaryButtonStyle}" Click="OnSaveChanges"/>
+                    <Button x:Name="DiscardButton" Content="弃用修改" MinWidth="88" Margin="0,0,10,0" Click="OnDiscardChanges"/>
+                    <Button x:Name="SaveButton" Content="保存" MinWidth="88"
+                            Style="{StaticResource AccentButtonStyle}" Click="OnSaveChanges"/>
                 </StackPanel>
             </Grid>
         </Border>

@@ -116,10 +116,10 @@ public partial class SettingsWindow : Window
 
     private void LoadPreferenceControls()
     {
-        EnabledCheck.IsChecked = _draftPreferences.GesturesEnabled;
-        TrailCheck.IsChecked = _draftPreferences.ShowTrail;
-        TrayIconCheck.IsChecked = _draftPreferences.ShowTrayIcon;
-        AutoStartCheck.IsChecked = _draftAutoStart;
+        EnabledCheck.IsOn = _draftPreferences.GesturesEnabled;
+        TrailCheck.IsOn = _draftPreferences.ShowTrail;
+        TrayIconCheck.IsOn = _draftPreferences.ShowTrayIcon;
+        AutoStartCheck.IsOn = _draftAutoStart;
         ThresholdSlider.Value = _draftPreferences.RecognitionThreshold;
         ThresholdLabel.Text = _draftPreferences.RecognitionThreshold.ToString("0.00");
         TimeoutSlider.Value = _draftPreferences.GestureTimeoutSeconds;
@@ -247,22 +247,22 @@ public partial class SettingsWindow : Window
     private void OnPrefsChanged(object sender, RoutedEventArgs e)
     {
         if (_suppressEvents) return;
-        _draftPreferences.GesturesEnabled = EnabledCheck.IsChecked == true;
-        _draftPreferences.ShowTrail = TrailCheck.IsChecked == true;
+        _draftPreferences.GesturesEnabled = EnabledCheck.IsOn;
+        _draftPreferences.ShowTrail = TrailCheck.IsOn;
         MarkDirty();
     }
 
     private void OnAutoStartChanged(object sender, RoutedEventArgs e)
     {
         if (_suppressEvents) return;
-        _draftAutoStart = AutoStartCheck.IsChecked == true;
+        _draftAutoStart = AutoStartCheck.IsOn;
         MarkDirty();
     }
 
     private void OnTrayIconChanged(object sender, RoutedEventArgs e)
     {
         if (_suppressEvents) return;
-        var show = TrayIconCheck.IsChecked == true;
+        var show = TrayIconCheck.IsOn;
         _draftPreferences.ShowTrayIcon = show;
         if (!show)
         {

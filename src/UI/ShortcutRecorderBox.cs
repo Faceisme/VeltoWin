@@ -30,25 +30,34 @@ public sealed class ShortcutRecorderBox : Border
 
     public ShortcutRecorderBox()
     {
-        Background = System.Windows.Media.Brushes.White;
-        BorderBrush = System.Windows.Media.Brushes.LightGray;
+        // 走主题资源,深浅色自动适配
+        SetResourceReference(BackgroundProperty, "TextControlBackground");
+        SetResourceReference(BorderBrushProperty, "TextControlBorderBrush");
         BorderThickness = new Thickness(1);
         CornerRadius = new CornerRadius(4);
-        Padding = new Thickness(10, 6, 10, 6);
+        Padding = new Thickness(10, 7, 10, 7);
+        MinHeight = 32;
         Focusable = true;
         Cursor = Cursors.Hand;
 
-        _label = new TextBlock
-        {
-            Text = "(点此录入)",
-            Foreground = System.Windows.Media.Brushes.Gray,
-        };
+        _label = new TextBlock { Text = "(点此录入)", VerticalAlignment = VerticalAlignment.Center };
         Child = _label;
 
         MouseLeftButtonDown += (_, e) => { Focus(); e.Handled = true; };
-        GotKeyboardFocus += (_, _) => { _capturing = true; BorderBrush = System.Windows.Media.Brushes.DodgerBlue; UpdateLabel(); };
-        LostKeyboardFocus += (_, _) => { _capturing = false; BorderBrush = System.Windows.Media.Brushes.LightGray; UpdateLabel(); };
+        GotKeyboardFocus += (_, _) =>
+        {
+            _capturing = true;
+            SetResourceReference(BorderBrushProperty, "SystemControlHighlightAccentBrush");
+            UpdateLabel();
+        };
+        LostKeyboardFocus += (_, _) =>
+        {
+            _capturing = false;
+            SetResourceReference(BorderBrushProperty, "TextControlBorderBrush");
+            UpdateLabel();
+        };
         PreviewKeyDown += OnPreviewKeyDown;
+        UpdateLabel();
     }
 
     private static void OnValueChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -61,18 +70,18 @@ public sealed class ShortcutRecorderBox : Border
         if (_capturing)
         {
             _label.Text = "请按下快捷键 (Esc 清空)";
-            _label.Foreground = System.Windows.Media.Brushes.DodgerBlue;
+            _label.SetResourceReference(TextBlock.ForegroundProperty, "SystemControlHighlightAccentBrush");
             return;
         }
         if (Value is null)
         {
             _label.Text = "(未设置)";
-            _label.Foreground = System.Windows.Media.Brushes.Gray;
+            _label.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
         }
         else
         {
             _label.Text = Value.DisplayName;
-            _label.Foreground = System.Windows.Media.Brushes.Black;
+            _label.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorPrimaryBrush");
         }
     }
 
