@@ -94,6 +94,9 @@ public sealed class GestureEngine : IDisposable
         // 无锁快速拒绝:手势关闭时所有事件直接放行,连锁都不抢。
         if (!_prefsSnapshot.GesturesEnabled) return false;
 
+        // 设置窗口活动时整体让路 —— 右键交给录制画布/系统菜单,不吞不识别。
+        if (GestureGate.Suspended) return false;
+
         lock (_stateLock)
         {
             return e.Kind switch

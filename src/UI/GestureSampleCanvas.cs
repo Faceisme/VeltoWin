@@ -8,8 +8,11 @@ using Velto.Models;
 namespace Velto.UI;
 
 /// <summary>
-/// 录入手势样本的画布。左键按下拖动 → 一条样本。再按一次左键 → 替换。
+/// 录入手势样本的画布。右键按下拖动 → 一条样本(和实际触发手势时一样用右键,手感一致)。
 /// 支持显示已有样本(只读叠加显示)和当前正在录的样本(高亮)。
+///
+/// 右键能落到这里的前提:设置窗口激活时 <see cref="Velto.Services.GestureGate"/> 会暂停全局钩子,
+/// 否则右键会被钩子吞掉,WPF 收不到 MouseRightButtonDown。
 /// </summary>
 public sealed class GestureSampleCanvas : Border
 {
@@ -42,8 +45,8 @@ public sealed class GestureSampleCanvas : Border
         };
         _canvas.Children.Add(_live);
 
-        MouseLeftButtonDown += OnDown;
-        MouseLeftButtonUp += OnUp;
+        MouseRightButtonDown += OnDown;
+        MouseRightButtonUp += OnUp;
         MouseMove += OnMove;
         MouseLeave += (_, _) => { if (_drawing) Finish(); };
     }

@@ -42,6 +42,12 @@ public partial class SettingsWindow : Window
 
         _store.Changed += OnStoreChanged;
         Closed += (_, _) => _store.Changed -= OnStoreChanged;
+
+        // 设置窗口活动时暂停全局手势,让右键能落到录制画布(以及让窗口内右键菜单可用)。
+        // 失活/关闭时立即恢复,保证别处的手势照常工作。
+        Activated += (_, _) => GestureGate.Suspended = true;
+        Deactivated += (_, _) => GestureGate.Suspended = false;
+        Closed += (_, _) => GestureGate.Suspended = false;
     }
 
     private Guid? SelectedGestureId => (GestureList.SelectedItem as GestureRow)?.Command.Id;

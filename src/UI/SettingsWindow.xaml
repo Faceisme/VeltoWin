@@ -158,7 +158,7 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
                                     <TextBlock Text="手势样本" FontWeight="SemiBold"/>
-                                    <TextBlock Text="在画布上按住左键拖动,可录入多个样本" Foreground="{StaticResource MutedTextBrush}"
+                                    <TextBlock Text="在画布上按住右键拖动,可录入多个样本(与实际触发手势一致)" Foreground="{StaticResource MutedTextBrush}"
                                                Margin="0,3,0,0"/>
                                 </StackPanel>
                                 <Button Grid.Column="1" Content="清空样本" Click="OnClearSamples"/>
