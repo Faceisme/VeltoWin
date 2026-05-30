@@ -33,8 +33,10 @@ public sealed class GestureRecognizer
     // runner-up 安全间隔:最优与次优太接近就拒绝,避免模棱两可时乱触发。
     // 曲线匹配的距离尺度比旧的归一化编辑距离小一个量级,这里相应调小。
     // 方向骨架已经先筛掉单段/多段混淆,这里再要求曲线距离有更明确的胜出间隔。
-    private const double MinimumCommandScoreGap  = 0.025;
-    private const double RelativeCommandScoreGap = 0.25;
+    private const double MinimumCommandScoreGap  = 0.045;
+    private const double RelativeCommandScoreGap = 0.40;
+    private const double MinimumSimpleStraightness = 0.72;
+    private const double MinimumSimpleAxisDominance = 1.25;
 
     private ulong _cachedVersion;
     private List<TemplateEntry> _cachedTemplates = new();
@@ -44,6 +46,7 @@ public sealed class GestureRecognizer
     /// <summary>每个录制样本的归一化曲线向量(长度 2*ResampleCount,交替存 x,y)。</summary>
     private sealed record TemplateEntry(GestureCommand Command, double[] Vector, int[] Directions);
     private sealed record NormalizedStroke(double[] Vector, int[] Directions);
+    private enum SimpleDirection { Left, Right, Up, Down }
 
     public Match? BestCandidate(IReadOnlyList<Point> points, IReadOnlyList<GestureCommand> commands, ulong version)
     {
@@ -102,6 +105,12 @@ public sealed class GestureRecognizer
         ulong version,
         double threshold)
     {
+        var simple = BestSimpleDirectionMatch(points, commands);
+        if (simple is not null)
+        {
+            return simple;
+        }
+
         var best = BestCandidate(points, commands, version);
         if (best is null || best.Distance > threshold)
         {
@@ -116,6 +125,121 @@ public sealed class GestureRecognizer
             }
         }
         return best;
+    }
+
+    private static Match? BestSimpleDirectionMatch(
+        IReadOnlyList<Point> points,
+        IReadOnlyList<GestureCommand> commands)
+    {
+        if (!TrySimpleDirection(points, out var drawn))
+        {
+            return null;
+        }
+
+        GestureCommand? matched = null;
+        foreach (var command in commands)
+        {
+            if (!TryCommandSimpleDirection(command, out var commandDirection) || commandDirection != drawn)
+            {
+                continue;
+            }
+
+            if (matched is not null)
+            {
+                return null;
+            }
+
+            matched = command;
+        }
+
+        return matched is null ? null : new Match(matched, 0);
+    }
+
+    private static bool TryCommandSimpleDirection(GestureCommand command, out SimpleDirection direction)
+    {
+        direction = default;
+        var hasTemplate = false;
+
+        foreach (var template in command.Templates)
+        {
+            if (template.Count < 2)
+            {
+                return false;
+            }
+
+            var points = new Point[template.Count];
+            for (int i = 0; i < template.Count; i++)
+            {
+                points[i] = new Point(template[i].X, template[i].Y);
+            }
+
+            if (!TrySimpleDirection(points, out var templateDirection))
+            {
+                return false;
+            }
+
+            if (!hasTemplate)
+            {
+                direction = templateDirection;
+                hasTemplate = true;
+            }
+            else if (direction != templateDirection)
+            {
+                return false;
+            }
+        }
+
+        return hasTemplate;
+    }
+
+    private static bool TrySimpleDirection(IReadOnlyList<Point> points, out SimpleDirection direction)
+    {
+        direction = default;
+        if (points.Count < 2)
+        {
+            return false;
+        }
+
+        var pathLen = PathLength(points);
+        if (pathLen < MinimumPathLength)
+        {
+            return false;
+        }
+
+        var start = points[0];
+        var end = points[^1];
+        var dx = end.X - start.X;
+        var dy = end.Y - start.Y;
+        var displacement = Math.Sqrt(dx * dx + dy * dy);
+        if (displacement < MinimumPathLength)
+        {
+            return false;
+        }
+
+        if (displacement / pathLen < MinimumSimpleStraightness)
+        {
+            return false;
+        }
+
+        var ax = Math.Abs(dx);
+        var ay = Math.Abs(dy);
+        var dominant = Math.Max(ax, ay);
+        var secondary = Math.Min(ax, ay);
+        if (dominant < secondary * MinimumSimpleAxisDominance)
+        {
+            return false;
+        }
+
+        if (ax >= ay)
+        {
+            direction = dx < 0 ? SimpleDirection.Left : SimpleDirection.Right;
+        }
+        else
+        {
+            direction = dy < 0 ? SimpleDirection.Up : SimpleDirection.Down;
+        }
+
+        return true;
     }
 
     /// <summary>

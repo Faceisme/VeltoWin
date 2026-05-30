@@ -23,10 +23,10 @@ public sealed class AppPreferences
 
     /// <summary>
     /// 识别阈值 = 可接受的最大平均逐点曲线距离。值越小越严格。
-    /// 曲线匹配($1)的尺度:同手势样本间约 0.01–0.14,不同手势间通常 ≥0.09,故默认 0.22。
+    /// 曲线匹配($1)的尺度:同手势样本间约 0.01–0.14,不同手势间通常 ≥0.09,故默认 0.18。
     /// (注意:这与旧"方向序列编辑距离"的阈值不是一个量级,旧配置会在加载时迁移。)
     /// </summary>
-    public double RecognitionThreshold { get; set; } = 0.22;
+    public double RecognitionThreshold { get; set; } = 0.18;
 
     /// <summary>手势超时秒数。绘制中停下不动超过该时间 → 取消当前手势(松开不触发)。默认 0.5s。</summary>
     public double GestureTimeoutSeconds { get; set; } = 0.5;

@@ -137,7 +137,7 @@ public sealed class GestureEngine : IDisposable
         InitMetricsLocked(_startPoint);
         ArmSafetyTimerLocked();
         var snapshot = _points.ToArray();
-        _uiDispatcher.BeginInvoke(() => _overlay.BeginGesture(snapshot, showTrail: false), DispatcherPriority.Send);
+        BeginOverlaySynchronously(snapshot);
         return true; // 吞掉:先看是不是手势
     }
 
@@ -149,9 +149,13 @@ public sealed class GestureEngine : IDisposable
             case State.Pending:
             {
                 var p = new Point(e.X, e.Y);
-                AppendPointLocked(p);
+                _lastPoint = p;
                 if (Distance(_startPoint, p) >= MovementThreshold)
                 {
+                    _points.Clear();
+                    _points.Add(_startPoint);
+                    InitMetricsLocked(_startPoint);
+                    AppendPointLocked(p);
                     _state = State.Gesturing;
                     ArmGestureTimeoutTimerLocked();
                     _lastArmedPoint = p;
@@ -268,7 +272,7 @@ public sealed class GestureEngine : IDisposable
             if (KeyboardSender.IsBrowserNavigationShortcut(shortcut))
             {
                 WindowTargeter.PrepareForExecution(target);
-                KeyboardSender.TrySendBrowserNavigationInput(shortcut);
+                KeyboardSender.TrySendBrowserNavigationInput(shortcut, target.Hwnd);
                 return;
             }
 
@@ -370,6 +374,27 @@ public sealed class GestureEngine : IDisposable
     private void HideOverlayAsync()
     {
         _uiDispatcher.BeginInvoke(() => _overlay.EndGesture(), DispatcherPriority.Render);
+    }
+
+    private void BeginOverlaySynchronously(IReadOnlyList<Point> points)
+    {
+        if (_uiDispatcher.HasShutdownStarted || _uiDispatcher.HasShutdownFinished) return;
+
+        try
+        {
+            if (_uiDispatcher.CheckAccess())
+            {
+                _overlay.BeginGesture(points, showTrail: false);
+            }
+            else
+            {
+                _uiDispatcher.Invoke(() => _overlay.BeginGesture(points, showTrail: false), DispatcherPriority.Send);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "BeginOverlaySynchronously");
+        }
     }
 
     private void HideOverlaySynchronously()

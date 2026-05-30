@@ -26,15 +26,40 @@ public static class KeyboardSender
         => BrowserNavigationXButton(shortcut) != 0;
 
     public static bool TrySendBrowserNavigationInput(Shortcut shortcut)
+        => TrySendBrowserNavigationInput(shortcut, IntPtr.Zero);
+
+    public static bool TrySendBrowserNavigationInput(Shortcut shortcut, IntPtr targetHwnd)
     {
-        var xButton = BrowserNavigationXButton(shortcut);
-        if (xButton == 0)
+        var appCommand = BrowserNavigationAppCommand(shortcut);
+        if (appCommand == 0)
         {
             return false;
         }
 
+        if (TryPostBrowserAppCommand(targetHwnd, appCommand))
+        {
+            return true;
+        }
+
+        var xButton = BrowserNavigationXButton(shortcut);
+        if (xButton == 0) return false;
         SendMouseXButton(xButton);
         return true;
+    }
+
+    private static int BrowserNavigationAppCommand(Shortcut shortcut)
+    {
+        if (shortcut.Modifiers != ModifierKeys.Alt)
+        {
+            return 0;
+        }
+
+        return shortcut.VirtualKey switch
+        {
+            VK_LEFT => NativeMethods.APPCOMMAND_BROWSER_BACKWARD,
+            VK_RIGHT => NativeMethods.APPCOMMAND_BROWSER_FORWARD,
+            _ => 0,
+        };
     }
 
     private static uint BrowserNavigationXButton(Shortcut shortcut)
@@ -50,6 +75,18 @@ public static class KeyboardSender
             VK_RIGHT => NativeMethods.XBUTTON2,
             _ => 0,
         };
+    }
+
+    private static bool TryPostBrowserAppCommand(IntPtr targetHwnd, int appCommand)
+    {
+        var hwnd = targetHwnd != IntPtr.Zero ? targetHwnd : NativeMethods.GetForegroundWindow();
+        if (hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var lParam = (IntPtr)(appCommand << 16);
+        return NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APPCOMMAND, hwnd, lParam);
     }
 
     public static void SendKey(uint virtualKey, ModifierKeys modifiers)

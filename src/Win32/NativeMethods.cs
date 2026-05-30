@@ -10,7 +10,11 @@ public static class NativeMethods
 {
     public const uint WM_NULL    = 0x0000;
     public const uint WM_COMMAND = 0x0111;
+    public const uint WM_APPCOMMAND = 0x0319;
     public const uint WM_APP     = 0x8000;
+
+    public const int APPCOMMAND_BROWSER_BACKWARD = 1;
+    public const int APPCOMMAND_BROWSER_FORWARD  = 2;
 
     // ──────────────────────────── Hooks ────────────────────────────
 

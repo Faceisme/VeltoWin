@@ -164,6 +164,13 @@ public sealed class ConfigStore
     private static void MigrateRecognitionThreshold(AppPreferences prefs)
     {
         const double newMin = 0.05, newMax = 0.40;
+        const double oldDefault = 0.22;
+        if (Math.Abs(prefs.RecognitionThreshold - oldDefault) < 0.0001)
+        {
+            prefs.RecognitionThreshold = AppPreferences.Default.RecognitionThreshold;
+            return;
+        }
+
         if (prefs.RecognitionThreshold < newMin || prefs.RecognitionThreshold > newMax)
         {
             Logger.Info($"识别阈值 {prefs.RecognitionThreshold:0.00} 超出新尺度范围,迁移为默认 {AppPreferences.Default.RecognitionThreshold:0.00}");
