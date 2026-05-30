@@ -19,6 +19,9 @@ public sealed class ConfigStore
 {
     public static ConfigStore Shared { get; } = new();
 
+    private const int StoredTemplatePointCount = 64;
+    private const int StoredCoordinateDigits = 1;
+
     public event Action<ChangeReason>? Changed;
 
     public enum ChangeReason
@@ -50,7 +53,7 @@ public sealed class ConfigStore
 
         _jsonOptions = new JsonSerializerOptions
         {
-            WriteIndented = true,
+            WriteIndented = false,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             Converters = { new JsonStringEnumConverter() },
         };
@@ -89,8 +92,8 @@ public sealed class ConfigStore
     {
         var backup = new BackupFile
         {
-            Gestures = _gestures,
-            Preferences = _preferences,
+            Gestures = _gestures.Select(CloneGesture).ToList(),
+            Preferences = ClonePreferences(_preferences),
         };
         return JsonSerializer.SerializeToUtf8Bytes(backup, _jsonOptions);
     }
@@ -140,7 +143,7 @@ public sealed class ConfigStore
                 return (DefaultGestures(), AppPreferences.Default);
             }
 
-            var gestures = payload.Gestures;
+            var gestures = payload.Gestures.Select(CloneGesture).ToList();
             var prefs = payload.Preferences ?? AppPreferences.Default;
             MigrateRecognitionThreshold(prefs);
             return (gestures, prefs);
@@ -172,8 +175,8 @@ public sealed class ConfigStore
     {
         var payload = new Payload
         {
-            Gestures = _gestures,
-            Preferences = _preferences,
+            Gestures = _gestures.Select(CloneGesture).ToList(),
+            Preferences = ClonePreferences(_preferences),
         };
         var json = JsonSerializer.SerializeToUtf8Bytes(payload, _jsonOptions);
 
@@ -197,9 +200,95 @@ public sealed class ConfigStore
             ? null
             : new Shortcut(source.Shortcut.VirtualKey, source.Shortcut.Modifiers, source.Shortcut.DisplayName),
         Templates = source.Templates
-            .Select(template => template.Select(p => new StrokePoint(p.X, p.Y)).ToList())
+            .Select(CompactTemplate)
             .ToList(),
     };
+
+    private static List<StrokePoint> CompactTemplate(IReadOnlyList<StrokePoint> template)
+    {
+        if (template.Count <= StoredTemplatePointCount)
+        {
+            return template.Select(RoundPoint).ToList();
+        }
+
+        var pathLength = PathLength(template);
+        if (pathLength <= 0)
+        {
+            return template.Take(StoredTemplatePointCount).Select(RoundPoint).ToList();
+        }
+
+        return ResampleTemplate(template, StoredTemplatePointCount, pathLength)
+            .Select(RoundPoint)
+            .ToList();
+    }
+
+    private static IEnumerable<StrokePoint> ResampleTemplate(
+        IReadOnlyList<StrokePoint> template,
+        int targetCount,
+        double knownPathLength)
+    {
+        var first = template[0];
+        yield return first;
+        if (targetCount <= 1) yield break;
+
+        var interval = knownPathLength / (targetCount - 1);
+        var emitted = 1;
+        var accumulated = 0.0;
+        var segmentStart = first;
+
+        for (int i = 1; i < template.Count; i++)
+        {
+            var segmentEnd = template[i];
+            var remaining = Distance(segmentStart, segmentEnd);
+
+            while (remaining > 0 && accumulated + remaining >= interval)
+            {
+                var needed = interval - accumulated;
+                var ratio = needed / remaining;
+                var point = new StrokePoint(
+                    segmentStart.X + ratio * (segmentEnd.X - segmentStart.X),
+                    segmentStart.Y + ratio * (segmentEnd.Y - segmentStart.Y));
+                yield return point;
+                emitted++;
+                if (emitted == targetCount) yield break;
+
+                segmentStart = point;
+                remaining = Distance(segmentStart, segmentEnd);
+                accumulated = 0;
+            }
+
+            accumulated += remaining;
+            segmentStart = segmentEnd;
+        }
+
+        var last = template[^1];
+        while (emitted < targetCount)
+        {
+            yield return last;
+            emitted++;
+        }
+    }
+
+    private static double PathLength(IReadOnlyList<StrokePoint> template)
+    {
+        double total = 0;
+        for (int i = 1; i < template.Count; i++)
+        {
+            total += Distance(template[i - 1], template[i]);
+        }
+        return total;
+    }
+
+    private static double Distance(StrokePoint a, StrokePoint b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    private static StrokePoint RoundPoint(StrokePoint point) => new(
+        Math.Round(point.X, StoredCoordinateDigits),
+        Math.Round(point.Y, StoredCoordinateDigits));
 
     private static AppPreferences ClonePreferences(AppPreferences source) => new()
     {
