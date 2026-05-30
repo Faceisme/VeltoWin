@@ -51,6 +51,7 @@ public sealed class GestureEngine : IDisposable
     private Point _lastPoint;
     private Point _lastArmedPoint;
     private NativeMethods.POINT _startPointWin;
+    private WindowTargeter.Target _startTarget = new(IntPtr.Zero, ShouldActivate: false);
     private long _downTick;
 
     // 乱画检测:累计路径长 + 外接框。路径长/对角线比值过大 = 来回乱涂 → 作废当前手势。
@@ -129,11 +130,14 @@ public sealed class GestureEngine : IDisposable
         _startPoint = new Point(e.X, e.Y);
         _lastPoint = _startPoint;
         _startPointWin = new NativeMethods.POINT { X = e.X, Y = e.Y };
+        _startTarget = WindowTargeter.Resolve(_prefsSnapshot.GestureTargetPolicy, _startPointWin);
         _downTick = Environment.TickCount64;
         _points.Clear();
         _points.Add(_startPoint);
         InitMetricsLocked(_startPoint);
         ArmSafetyTimerLocked();
+        var snapshot = _points.ToArray();
+        _uiDispatcher.BeginInvoke(() => _overlay.BeginGesture(snapshot, showTrail: false), DispatcherPriority.Send);
         return true; // 吞掉:先看是不是手势
     }
 
@@ -151,11 +155,9 @@ public sealed class GestureEngine : IDisposable
                     _state = State.Gesturing;
                     ArmGestureTimeoutTimerLocked();
                     _lastArmedPoint = p;
-                    if (_prefsSnapshot.ShowTrail)
-                    {
-                        var snapshot = _points.ToArray();
-                        _uiDispatcher.BeginInvoke(() => _overlay.Show(snapshot), DispatcherPriority.Render);
-                    }
+                    var showTrail = _prefsSnapshot.ShowTrail;
+                    var snapshot = _points.ToArray();
+                    _uiDispatcher.BeginInvoke(() => _overlay.UpdateGesture(snapshot, showTrail), DispatcherPriority.Render);
                 }
                 return false;
             }
@@ -177,11 +179,9 @@ public sealed class GestureEngine : IDisposable
                         ArmGestureTimeoutTimerLocked();
                         _lastArmedPoint = p;
                     }
-                    if (_prefsSnapshot.ShowTrail)
-                    {
-                        var snapshot = _points.ToArray();
-                        _uiDispatcher.BeginInvoke(() => _overlay.Update(snapshot), DispatcherPriority.Render);
-                    }
+                    var showTrail = _prefsSnapshot.ShowTrail;
+                    var snapshot = _points.ToArray();
+                    _uiDispatcher.BeginInvoke(() => _overlay.UpdateGesture(snapshot, showTrail), DispatcherPriority.Render);
                 }
                 return false;
             }
@@ -203,25 +203,30 @@ public sealed class GestureEngine : IDisposable
                 // ★关键★:绝不能在这里(钩子回调内 + 持锁)直接 SendInput。
                 // 从 LL 钩子回调内部注入输入,系统会把注入事件排到当前钩子处理之后并串行化,
                 // 实测右键菜单要等 1.5s 以上。改成 ThreadPool 在回调返回后立刻回放,菜单瞬时弹出。
-                ResetTrackingLocked();
-                ThreadPool.QueueUserWorkItem(static _ => KeyboardSender.ReplayRightClick());
+                ResetTrackingLocked(hideOverlay: false);
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    HideOverlaySynchronously();
+                    KeyboardSender.ReplayRightClick();
+                });
                 return true;
             }
             case State.Gesturing:
             {
                 AppendPointLocked(new Point(e.X, e.Y));
                 var capturedPoints = _points.ToArray();
-                var capturedStartWin = _startPointWin;
+                var capturedTarget = _startTarget;
                 var capturedPrefs = _prefsSnapshot;
                 var snapshot = _gestureSnapshot;
 
-                ResetTrackingLocked();
+                ResetTrackingLocked(hideOverlay: false);
 
                 // SetForegroundWindow + 等前台切换 + SendInput 可能慢,放到 ThreadPool,
                 // 让 hook 线程立刻返回继续接事件。
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    RunGesture(capturedPoints, capturedStartWin, capturedPrefs, snapshot.Gestures, snapshot.Version);
+                    HideOverlaySynchronously();
+                    RunGesture(capturedPoints, capturedTarget, capturedPrefs, snapshot.Gestures, snapshot.Version);
                 });
                 return true;
             }
@@ -235,7 +240,7 @@ public sealed class GestureEngine : IDisposable
 
     private void RunGesture(
         Point[] points,
-        NativeMethods.POINT startPointWin,
+        WindowTargeter.Target target,
         AppPreferences prefs,
         IReadOnlyList<GestureCommand> gestures,
         ulong version)
@@ -260,7 +265,6 @@ public sealed class GestureEngine : IDisposable
 
             Logger.Info($"gesture matched '{match.Command.Name}' drawn=[{drawn}] distance={match.Distance:0.000} runnerUp={match.RunnerUpDistance:0.000} → {shortcut.DisplayName}");
 
-            var target = WindowTargeter.Resolve(prefs.GestureTargetPolicy, startPointWin);
             WindowTargeter.PrepareForExecution(target);
 
             // A1:不再固定 Sleep(60)。SetForegroundWindow 后轮询确认目标真的拿到前台,
@@ -331,7 +335,7 @@ public sealed class GestureEngine : IDisposable
         return _pathLength / diagonal > ScribblePathRatio;
     }
 
-    private void ResetTrackingLocked()
+    private void ResetTrackingLocked(bool hideOverlay = true)
     {
         _state = State.Idle;
         _points.Clear();
@@ -339,9 +343,10 @@ public sealed class GestureEngine : IDisposable
         _startPoint = default;
         _lastPoint = default;
         _lastArmedPoint = default;
+        _startTarget = new WindowTargeter.Target(IntPtr.Zero, ShouldActivate: false);
         _gestureTimeoutTimer.Change(Timeout.Infinite, Timeout.Infinite);
         _safetyTimer.Change(Timeout.Infinite, Timeout.Infinite);
-        _uiDispatcher.BeginInvoke(() => _overlay.Hide(), DispatcherPriority.Render);
+        if (hideOverlay) HideOverlayAsync();
     }
 
     private void CancelAndAwaitRightUpLocked()
@@ -349,9 +354,29 @@ public sealed class GestureEngine : IDisposable
         _state = State.CleanupAwaitingUp;
         _points.Clear();
         _pathLength = 0;
+        _startTarget = new WindowTargeter.Target(IntPtr.Zero, ShouldActivate: false);
         _gestureTimeoutTimer.Change(Timeout.Infinite, Timeout.Infinite);
         _safetyTimer.Change(Timeout.Infinite, Timeout.Infinite);
-        _uiDispatcher.BeginInvoke(() => _overlay.Hide(), DispatcherPriority.Render);
+        HideOverlayAsync();
+    }
+
+    private void HideOverlayAsync()
+    {
+        _uiDispatcher.BeginInvoke(() => _overlay.EndGesture(), DispatcherPriority.Render);
+    }
+
+    private void HideOverlaySynchronously()
+    {
+        if (_uiDispatcher.HasShutdownStarted || _uiDispatcher.HasShutdownFinished) return;
+
+        try
+        {
+            _uiDispatcher.Invoke(() => _overlay.EndGesture(), DispatcherPriority.Send);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "HideOverlaySynchronously");
+        }
     }
 
     private void ArmSafetyTimerLocked()

@@ -12,6 +12,9 @@
         ResizeMode="NoResize"
         Visibility="Hidden">
     <Canvas x:Name="HostCanvas">
+        <Rectangle x:Name="InputShield"
+                   Fill="#01000000"
+                   Visibility="Collapsed"/>
         <Polyline x:Name="TrailLine"
                   Stroke="#00B8B8"
                   StrokeThickness="4"

@@ -21,6 +21,8 @@ namespace Velto.UI;
 /// </summary>
 public partial class TrailOverlayWindow : Window
 {
+    private bool _blocksInput;
+
     public TrailOverlayWindow()
     {
         InitializeComponent();
@@ -54,6 +56,8 @@ public partial class TrailOverlayWindow : Window
         Top = y / dpiY;
         Width = w / dpiX;
         Height = h / dpiY;
+        InputShield.Width = Width;
+        InputShield.Height = Height;
         _virtualOriginX = x;
         _virtualOriginY = y;
         _dpiX = dpiX;
@@ -63,22 +67,82 @@ public partial class TrailOverlayWindow : Window
     private double _virtualOriginX, _virtualOriginY;
     private double _dpiX = 1.0, _dpiY = 1.0;
 
+    public void BeginGesture(IReadOnlyList<Point> points, bool showTrail)
+    {
+        EnsureVisible();
+        SetBlocksInput(true);
+        if (showTrail) DrawTrail(points);
+        else ClearTrail();
+    }
+
+    public void UpdateGesture(IReadOnlyList<Point> points, bool showTrail)
+    {
+        EnsureVisible();
+        SetBlocksInput(true);
+        if (showTrail) DrawTrail(points);
+        else ClearTrail();
+    }
+
+    public void EndGesture()
+    {
+        ClearTrail();
+        SetBlocksInput(false);
+        Visibility = Visibility.Hidden;
+    }
+
     public void Show(IReadOnlyList<Point> points)
+    {
+        BeginGesture(points, showTrail: true);
+    }
+
+    public void Update(IReadOnlyList<Point> points)
+    {
+        DrawTrail(points);
+    }
+
+    public new void Hide()
+    {
+        EndGesture();
+    }
+
+    private void EnsureVisible()
     {
         if (!IsVisible)
         {
             ApplyVirtualScreenBounds();
             Visibility = Visibility.Visible;
         }
-        Update(points);
     }
 
-    public void Update(IReadOnlyList<Point> points)
+    private void SetBlocksInput(bool blocksInput)
+    {
+        if (_blocksInput == blocksInput) return;
+        _blocksInput = blocksInput;
+
+        IsHitTestVisible = blocksInput;
+        HostCanvas.IsHitTestVisible = blocksInput;
+        InputShield.Visibility = blocksInput ? Visibility.Visible : Visibility.Collapsed;
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+
+        var ex = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE).ToInt64();
+        if (blocksInput)
+        {
+            ex &= ~NativeMethods.WS_EX_TRANSPARENT;
+        }
+        else
+        {
+            ex |= NativeMethods.WS_EX_TRANSPARENT;
+        }
+        NativeMethods.SetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE, (IntPtr)ex);
+    }
+
+    private void DrawTrail(IReadOnlyList<Point> points)
     {
         if (points.Count < 2)
         {
-            TrailLine.Points.Clear();
-            HideHead();
+            ClearTrail();
             return;
         }
 
@@ -108,11 +172,10 @@ public partial class TrailOverlayWindow : Window
         ShowHead(head);
     }
 
-    public new void Hide()
+    private void ClearTrail()
     {
         TrailLine.Points.Clear();
         HideHead();
-        Visibility = Visibility.Hidden;
     }
 
     private Point ToLocal(Point screenPx)
