@@ -30,8 +30,12 @@ public sealed class GestureRecognizer
     /// <summary>众数平滑窗口(奇数)。消除单段方向抖动。</summary>
     private const int SmoothingWindow = 3;
 
-    /// <summary>一个方向 run 至少占这么多段,否则当拐角抖动丢弃。63 段里 4 段 ≈ 6%。</summary>
-    private const int MinRunSegments = 4;
+    /// <summary>
+    /// 一个方向 run 至少占这么多段,否则当拐角抖动丢弃。63 段里 2 段 ≈ 3%。
+    /// 之前是 4(≈6%):画 ↑→ 这类两笔手势时,较短的第二笔(向右那一划)不足 4 段会被整段丢掉,
+    /// 退化成单笔 "↑",于是和"新建标签页"之类的单笔手势撞车、误触发。降到 2 让短第二笔能保留下来。
+    /// </summary>
+    private const int MinRunSegments = 2;
 
     // runner-up 安全间隔:最优与次优太接近就拒绝,避免模棱两可时乱触发。
     private const double MinimumCommandScoreGap  = 0.05;

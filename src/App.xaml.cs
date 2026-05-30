@@ -41,6 +41,9 @@ public partial class App : Application
         {
             var store = ConfigStore.Shared;
 
+            // 在开始菜单放一个快捷方式,保证"开始菜单搜索 Velto"能找到程序。
+            StartMenuShortcut.Ensure();
+
             _overlay = new TrailOverlayWindow();
             // 先 Show + Hide 一次让 hwnd 真的建出来,后续从 hook 线程 BeginInvoke 过来时不用走 lazy realize。
             _overlay.Show();
