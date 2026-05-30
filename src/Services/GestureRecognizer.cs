@@ -32,9 +32,9 @@ public sealed class GestureRecognizer
 
     // runner-up 安全间隔:最优与次优太接近就拒绝,避免模棱两可时乱触发。
     // 曲线匹配的距离尺度比旧的归一化编辑距离小一个量级,这里相应调小。
-    // 绝对下限取得很小,是为了不误杀"新建 vs 下一标签"这种本就贴得很近(~0.02 间隔)的合法手势。
-    private const double MinimumCommandScoreGap  = 0.010;
-    private const double RelativeCommandScoreGap = 0.15;
+    // 方向骨架已经先筛掉单段/多段混淆,这里再要求曲线距离有更明确的胜出间隔。
+    private const double MinimumCommandScoreGap  = 0.025;
+    private const double RelativeCommandScoreGap = 0.25;
 
     private ulong _cachedVersion;
     private List<TemplateEntry> _cachedTemplates = new();
@@ -42,11 +42,12 @@ public sealed class GestureRecognizer
     public sealed record Match(GestureCommand Command, double Distance, double? RunnerUpDistance = null);
 
     /// <summary>每个录制样本的归一化曲线向量(长度 2*ResampleCount,交替存 x,y)。</summary>
-    private sealed record TemplateEntry(GestureCommand Command, double[] Vector);
+    private sealed record TemplateEntry(GestureCommand Command, double[] Vector, int[] Directions);
+    private sealed record NormalizedStroke(double[] Vector, int[] Directions);
 
     public Match? BestCandidate(IReadOnlyList<Point> points, IReadOnlyList<GestureCommand> commands, ulong version)
     {
-        var candidate = BuildVector(points);
+        var candidate = BuildNormalizedStroke(points);
         if (candidate is null)
         {
             return null;
@@ -57,7 +58,12 @@ public sealed class GestureRecognizer
         var commandRef = new Dictionary<Guid, GestureCommand>();
         foreach (var template in NormalizedTemplates(commands, version))
         {
-            var d = ShapeDistance(candidate, template.Vector);
+            if (!DirectionCompatible(candidate.Directions, template.Directions))
+            {
+                continue;
+            }
+
+            var d = ShapeDistance(candidate.Vector, template.Vector);
             if (!bestByCommand.TryGetValue(template.Command.Id, out var existing) || d < existing)
             {
                 bestByCommand[template.Command.Id] = d;
@@ -143,10 +149,10 @@ public sealed class GestureRecognizer
                 {
                     pts[i] = new Point(template[i].X, template[i].Y);
                 }
-                var vec = BuildVector(pts);
-                if (vec is not null)
+                var normalized = BuildNormalizedStroke(pts);
+                if (normalized is not null)
                 {
-                    list.Add(new TemplateEntry(command, vec));
+                    list.Add(new TemplateEntry(command, normalized.Vector, normalized.Directions));
                 }
             }
         }
@@ -162,6 +168,17 @@ public sealed class GestureRecognizer
     /// 重采样 → 平移到质心 → 按较长边等比缩放。返回长度 2*ResampleCount 的向量(x0,y0,x1,y1,...)。
     /// 点太少 / 笔画太短 → 返回 null。
     /// </summary>
+    private static NormalizedStroke? BuildNormalizedStroke(IReadOnlyList<Point> points)
+    {
+        var vector = BuildVector(points);
+        if (vector is null) return null;
+
+        var directions = BuildDirectionSequence(points);
+        if (directions is null || directions.Length == 0) return null;
+
+        return new NormalizedStroke(vector, directions);
+    }
+
     private static double[]? BuildVector(IReadOnlyList<Point> points)
     {
         if (points.Count < 2) return null;
@@ -265,6 +282,26 @@ public sealed class GestureRecognizer
         var angle = Math.Atan2(dy, dx); // -π..π
         var idx = (int)Math.Round(angle / (Math.PI / 4.0));
         return ((idx % 8) + 8) % 8;
+    }
+
+    private static bool DirectionCompatible(int[] a, int[] b)
+    {
+        if (a.Length != b.Length) return false;
+
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (DirectionDistance(a[i], b[i]) > 1)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int DirectionDistance(int a, int b)
+    {
+        var d = Math.Abs(a - b);
+        return Math.Min(d, 8 - d);
     }
 
     private static string DirectionGlyph(int d) => d switch

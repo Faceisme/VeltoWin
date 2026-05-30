@@ -140,7 +140,7 @@ public sealed class ConfigStore
                 return (DefaultGestures(), AppPreferences.Default);
             }
 
-            var gestures = payload.Gestures.Count > 0 ? payload.Gestures : DefaultGestures();
+            var gestures = payload.Gestures;
             var prefs = payload.Preferences ?? AppPreferences.Default;
             MigrateRecognitionThreshold(prefs);
             return (gestures, prefs);

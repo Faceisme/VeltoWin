@@ -209,6 +209,17 @@ public partial class SettingsWindow : Window
         MarkDirty();
     }
 
+    private void OnClearAllGestures(object sender, RoutedEventArgs e)
+    {
+        if (_draftGestures.Count == 0) return;
+        if (MessageBox.Show(this, "确定清空所有手势和样本吗?", "Velto", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
+            != MessageBoxResult.OK) return;
+
+        _draftGestures.Clear();
+        RebuildGestureRows(null);
+        MarkDirty();
+    }
+
     private void OnAddGesture(object sender, RoutedEventArgs e)
     {
         var gesture = new GestureCommand { Name = "新手势" };
