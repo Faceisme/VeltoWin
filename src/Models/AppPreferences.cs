@@ -28,8 +28,8 @@ public sealed class AppPreferences
     /// </summary>
     public double RecognitionThreshold { get; set; } = 0.22;
 
-    /// <summary>手势超时秒数。绘制中超过该时间静止 → 取消。</summary>
-    public double GestureTimeoutSeconds { get; set; } = 3.0;
+    /// <summary>手势超时秒数。绘制中停下不动超过该时间 → 取消当前手势(松开不触发)。默认 0.5s。</summary>
+    public double GestureTimeoutSeconds { get; set; } = 0.5;
 
     public GestureTargetPolicy GestureTargetPolicy { get; set; } = GestureTargetPolicy.WindowUnderPointer;
 

@@ -53,6 +53,10 @@ public sealed class GestureEngine : IDisposable
     private NativeMethods.POINT _startPointWin;
     private long _downTick;
 
+    // 乱画检测:累计路径长 + 外接框。路径长/对角线比值过大 = 来回乱涂 → 作废当前手势。
+    private double _pathLength;
+    private double _minX, _maxX, _minY, _maxY;
+
     // System.Threading.Timer:回调跑在 ThreadPool 上;callback 内重新进 lock 同步状态。
     private readonly System.Threading.Timer _gestureTimeoutTimer;
     private readonly System.Threading.Timer _safetyTimer;
@@ -62,6 +66,13 @@ public sealed class GestureEngine : IDisposable
     private const double TimeoutRearmDistance     = 8;
     private const int    MaximumGesturePointCount = 512;
     private const double SafetyTimeoutSeconds     = 8;
+
+    // 乱画(scribble)判定:路径总长 / 外接框对角线。合法手势实测比值最大约 1.94
+    // (刷新 / 重开标签 这类来回一次的);3.5 留足余量,而真正来回乱涂(多次反向)会轻松冲到 4+。
+    // 只在画得够长(≥ScribbleMinPath)且对角线不太小(避免起笔噪声 / 除零)时才判。
+    private const double ScribblePathRatio   = 3.5;
+    private const double ScribbleMinPath     = 80;
+    private const double ScribbleMinDiagonal = 25;
 
     public GestureEngine(ConfigStore store, TrailOverlayWindow overlay, Dispatcher uiDispatcher)
     {
@@ -121,6 +132,7 @@ public sealed class GestureEngine : IDisposable
         _downTick = Environment.TickCount64;
         _points.Clear();
         _points.Add(_startPoint);
+        InitMetricsLocked(_startPoint);
         ArmSafetyTimerLocked();
         return true; // 吞掉:先看是不是手势
     }
@@ -153,6 +165,13 @@ public sealed class GestureEngine : IDisposable
                 var added = AppendPointLocked(p);
                 if (added)
                 {
+                    // 乱画作废:还按着右键、但已经画成来回乱涂 → 取消当前手势,等松开(松开不触发任何快捷键)。
+                    if (IsScribbleLocked())
+                    {
+                        Logger.Info($"gesture cancelled: 乱画作废 (path={_pathLength:0}px)");
+                        CancelAndAwaitRightUpLocked();
+                        return false;
+                    }
                     if (Distance(_lastArmedPoint, p) >= TimeoutRearmDistance)
                     {
                         ArmGestureTimeoutTimerLocked();
@@ -275,6 +294,7 @@ public sealed class GestureEngine : IDisposable
         if (_points.Count == 0)
         {
             _points.Add(p);
+            InitMetricsLocked(p);
             return true;
         }
         var prev = _points[^1];
@@ -282,13 +302,40 @@ public sealed class GestureEngine : IDisposable
 
         if (_points.Count >= MaximumGesturePointCount) _points[^1] = p;
         else _points.Add(p);
+        AccumulateMetricsLocked(prev, p);
         return true;
+    }
+
+    private void InitMetricsLocked(Point p)
+    {
+        _pathLength = 0;
+        _minX = _maxX = p.X;
+        _minY = _maxY = p.Y;
+    }
+
+    private void AccumulateMetricsLocked(Point prev, Point p)
+    {
+        _pathLength += Distance(prev, p);
+        if (p.X < _minX) _minX = p.X; else if (p.X > _maxX) _maxX = p.X;
+        if (p.Y < _minY) _minY = p.Y; else if (p.Y > _maxY) _maxY = p.Y;
+    }
+
+    /// <summary>当前笔画是否已成"乱画"(来回涂抹):路径总长相对外接框对角线过大。</summary>
+    private bool IsScribbleLocked()
+    {
+        if (_pathLength < ScribbleMinPath) return false;
+        var dx = _maxX - _minX;
+        var dy = _maxY - _minY;
+        var diagonal = Math.Sqrt(dx * dx + dy * dy);
+        if (diagonal < ScribbleMinDiagonal) return false;
+        return _pathLength / diagonal > ScribblePathRatio;
     }
 
     private void ResetTrackingLocked()
     {
         _state = State.Idle;
         _points.Clear();
+        _pathLength = 0;
         _startPoint = default;
         _lastPoint = default;
         _lastArmedPoint = default;
@@ -301,6 +348,7 @@ public sealed class GestureEngine : IDisposable
     {
         _state = State.CleanupAwaitingUp;
         _points.Clear();
+        _pathLength = 0;
         _gestureTimeoutTimer.Change(Timeout.Infinite, Timeout.Infinite);
         _safetyTimer.Change(Timeout.Infinite, Timeout.Infinite);
         _uiDispatcher.BeginInvoke(() => _overlay.Hide(), DispatcherPriority.Render);
