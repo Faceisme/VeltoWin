@@ -206,8 +206,8 @@
                                 </Grid.ColumnDefinitions>
 
                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="识别阈值(越小越严格)" VerticalAlignment="Center"/>
-                                <Slider x:Name="ThresholdSlider" Grid.Row="0" Grid.Column="1" Minimum="0.10" Maximum="0.80"
-                                        TickFrequency="0.05" SmallChange="0.01" LargeChange="0.05"
+                                <Slider x:Name="ThresholdSlider" Grid.Row="0" Grid.Column="1" Minimum="0.05" Maximum="0.40"
+                                        TickFrequency="0.025" SmallChange="0.01" LargeChange="0.05"
                                         ValueChanged="OnThresholdChanged" Margin="12,0"/>
                                 <TextBlock Grid.Row="0" Grid.Column="2" x:Name="ThresholdLabel" VerticalAlignment="Center"
                                            TextAlignment="Right"/>

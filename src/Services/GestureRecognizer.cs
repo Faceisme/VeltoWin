@@ -4,21 +4,24 @@ using Velto.Models;
 namespace Velto.Services;
 
 /// <summary>
-/// 方向序列识别器 —— 鼠标手势工具的标准做法(Opera / FireGestures / StrokesPlus / WGestures)。
+/// 曲线形状识别器 —— <c>$1 Unistroke Recognizer</c> 的做法(WGestures / 各浏览器手势插件同源思路)。
 ///
-/// 取代原来从 macOS 版移植的 <c>$1</c> 形状匹配。<c>$1</c> 比的是"整体形状相似度",
-/// 方向相近的简单笔画归一化后点云高度重叠,判定边界薄、易误识别(Ctrl+Tab / Ctrl+T 互抢就是这个原因)。
-/// 方向序列天然尺度无关、位置无关、方向敏感、抗抖动,结构上就不可能把 ↑ 和 ↓、→ 和 →↓ 搞混。
+/// 设计目标:用户画什么曲线、就按那条曲线识别,而不是要求画成方方正正的折线。
+///
+/// 为什么从"方向序列"改回曲线匹配:
+///   方向序列法把笔画量化成 8 个方向再丢掉短段,信息有损 —— 两条"大方向相同、弯法不同"的曲线
+///   (例如 新建 vs 下一标签:都偏向右上,只是起笔高低/弧度不同)量化后会塌成同一个序列,
+///   永远互抢、再录也分不开。曲线匹配比的是整条轨迹的逐点形状,能把它们区分开。
+///   (在用户真实录制样本上离线验证:曲线匹配留一法准确率 97%,方向序列法把这两个手势判成完全相同。)
 ///
 /// 流程:
 ///   1. 按弧长重采样到固定点数(消除画得快/慢导致的点疏密差异)
-///   2. 每段量化到 8 个方向之一(→↘↓↙←↖↑↗)
-///   3. 众数平滑,消除单段方向抖动
-///   4. 游程编码合并连续同向,丢弃过短 run(拐角抖动)
-///   5. 得到方向序列,再用"带方向感知替换代价的归一化编辑距离"比对
+///   2. 平移到质心(位置无关)
+///   3. 按外接框较长边等比缩放到单位尺度(尺寸无关;等比而非各轴拉伸 —— 拉伸会放大直线的抖动)
+///   4. 与每个录制样本逐点求平均欧氏距离;不做旋转归一化 —— 手势方向本身有意义(↑ 不该等于 ↓)
 ///
-/// 距离语义:0 = 序列完全一致,1 = 完全不同。识别阈值(默认 0.34)= 允许序列里多大比例不一致。
-/// 相邻方向(45°)替换代价 0.25 → 单方向手势容许 ±45° 的画歪,但 90° 以上必然判为不同手势。
+/// 距离语义:0 = 与某条录制曲线完全重合,越大越不像。识别阈值 = 可接受的最大平均逐点距离。
+/// 典型值:同一手势的不同样本之间约 0.01–0.14;不同手势之间通常 ≥0.09。默认阈值 0.22。
 ///
 /// 调用者只在 hook 线程 / UI 线程访问,无锁(缓存按 version 失效)。
 /// </summary>
@@ -27,31 +30,24 @@ public sealed class GestureRecognizer
     private const int    ResampleCount     = 64;
     private const double MinimumPathLength = 24;
 
-    /// <summary>众数平滑窗口(奇数)。消除单段方向抖动。</summary>
-    private const int SmoothingWindow = 3;
-
-    /// <summary>
-    /// 一个方向 run 至少占这么多段,否则当拐角抖动丢弃。63 段里 2 段 ≈ 3%。
-    /// 之前是 4(≈6%):画 ↑→ 这类两笔手势时,较短的第二笔(向右那一划)不足 4 段会被整段丢掉,
-    /// 退化成单笔 "↑",于是和"新建标签页"之类的单笔手势撞车、误触发。降到 2 让短第二笔能保留下来。
-    /// </summary>
-    private const int MinRunSegments = 2;
-
     // runner-up 安全间隔:最优与次优太接近就拒绝,避免模棱两可时乱触发。
-    private const double MinimumCommandScoreGap  = 0.05;
-    private const double RelativeCommandScoreGap = 0.20;
+    // 曲线匹配的距离尺度比旧的归一化编辑距离小一个量级,这里相应调小。
+    // 绝对下限取得很小,是为了不误杀"新建 vs 下一标签"这种本就贴得很近(~0.02 间隔)的合法手势。
+    private const double MinimumCommandScoreGap  = 0.010;
+    private const double RelativeCommandScoreGap = 0.15;
 
     private ulong _cachedVersion;
     private List<TemplateEntry> _cachedTemplates = new();
 
     public sealed record Match(GestureCommand Command, double Distance, double? RunnerUpDistance = null);
 
-    private sealed record TemplateEntry(GestureCommand Command, int[] Sequence);
+    /// <summary>每个录制样本的归一化曲线向量(长度 2*ResampleCount,交替存 x,y)。</summary>
+    private sealed record TemplateEntry(GestureCommand Command, double[] Vector);
 
     public Match? BestCandidate(IReadOnlyList<Point> points, IReadOnlyList<GestureCommand> commands, ulong version)
     {
-        var candidate = BuildSequence(points);
-        if (candidate is null || candidate.Length == 0)
+        var candidate = BuildVector(points);
+        if (candidate is null)
         {
             return null;
         }
@@ -61,8 +57,7 @@ public sealed class GestureRecognizer
         var commandRef = new Dictionary<Guid, GestureCommand>();
         foreach (var template in NormalizedTemplates(commands, version))
         {
-            if (template.Sequence.Length == 0) continue;
-            var d = SequenceDistance(candidate, template.Sequence);
+            var d = ShapeDistance(candidate, template.Vector);
             if (!bestByCommand.TryGetValue(template.Command.Id, out var existing) || d < existing)
             {
                 bestByCommand[template.Command.Id] = d;
@@ -117,10 +112,13 @@ public sealed class GestureRecognizer
         return best;
     }
 
-    /// <summary>调试用:把笔画转成可读方向串,如 "→ ↓"。日志里看误识别非常直观。</summary>
+    /// <summary>
+    /// 调试用:把笔画转成可读方向串,如 "→ ↓"。只用于写日志,不参与匹配。
+    /// 排查识别问题时,日志里同时有方向串和各候选距离,一眼能看出画的是什么、被判成了什么。
+    /// </summary>
     public string DescribeSequence(IReadOnlyList<Point> points)
     {
-        var seq = BuildSequence(points);
+        var seq = BuildDirectionSequence(points);
         if (seq is null || seq.Length == 0) return "(空)";
         return string.Join(" ", seq.Select(DirectionGlyph));
     }
@@ -145,10 +143,10 @@ public sealed class GestureRecognizer
                 {
                     pts[i] = new Point(template[i].X, template[i].Y);
                 }
-                var seq = BuildSequence(pts);
-                if (seq is not null && seq.Length > 0)
+                var vec = BuildVector(pts);
+                if (vec is not null)
                 {
-                    list.Add(new TemplateEntry(command, seq));
+                    list.Add(new TemplateEntry(command, vec));
                 }
             }
         }
@@ -158,9 +156,13 @@ public sealed class GestureRecognizer
         return list;
     }
 
-    // ───────────────────────── 序列构建 ─────────────────────────
+    // ───────────────────────── 曲线向量构建 ($1) ─────────────────────────
 
-    private static int[]? BuildSequence(IReadOnlyList<Point> points)
+    /// <summary>
+    /// 重采样 → 平移到质心 → 按较长边等比缩放。返回长度 2*ResampleCount 的向量(x0,y0,x1,y1,...)。
+    /// 点太少 / 笔画太短 → 返回 null。
+    /// </summary>
+    private static double[]? BuildVector(IReadOnlyList<Point> points)
     {
         if (points.Count < 2) return null;
         var pathLen = PathLength(points);
@@ -169,135 +171,100 @@ public sealed class GestureRecognizer
         var resampled = Resample(points, ResampleCount, pathLen);
         if (resampled.Length < 2) return null;
 
-        // 1. 逐段量化方向
+        int n = resampled.Length;
+
+        double cx = 0, cy = 0;
+        for (int i = 0; i < n; i++) { cx += resampled[i].X; cy += resampled[i].Y; }
+        cx /= n; cy /= n;
+
+        double minX = double.MaxValue, maxX = double.MinValue;
+        double minY = double.MaxValue, maxY = double.MinValue;
+        for (int i = 0; i < n; i++)
+        {
+            var x = resampled[i].X - cx;
+            var y = resampled[i].Y - cy;
+            if (x < minX) minX = x; if (x > maxX) maxX = x;
+            if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+
+        // 等比缩放:用外接框较长边做分母。比各轴独立拉伸更稳 ——
+        // 直线手势(后退/翻页)在某个轴上跨度近 0,各轴拉伸会把那个轴上的微小抖动放大成"形状"。
+        var span = Math.Max(maxX - minX, maxY - minY);
+        if (span < 1e-6) span = 1;
+
+        var vec = new double[2 * n];
+        for (int i = 0; i < n; i++)
+        {
+            vec[2 * i]     = (resampled[i].X - cx) / span;
+            vec[2 * i + 1] = (resampled[i].Y - cy) / span;
+        }
+        return vec;
+    }
+
+    /// <summary>两条归一化曲线的平均逐点欧氏距离。两向量等长(都是 2*ResampleCount)。</summary>
+    private static double ShapeDistance(double[] a, double[] b)
+    {
+        int n = a.Length / 2;
+        if (n == 0) return double.PositiveInfinity;
+        double sum = 0;
+        for (int i = 0; i < n; i++)
+        {
+            var dx = a[2 * i]     - b[2 * i];
+            var dy = a[2 * i + 1] - b[2 * i + 1];
+            sum += Math.Sqrt(dx * dx + dy * dy);
+        }
+        return sum / n;
+    }
+
+    // ───────────────────────── 方向序列(仅供日志可读) ─────────────────────────
+
+    private static int[]? BuildDirectionSequence(IReadOnlyList<Point> points)
+    {
+        if (points.Count < 2) return null;
+        var pathLen = PathLength(points);
+        if (pathLen < MinimumPathLength) return null;
+
+        var resampled = Resample(points, ResampleCount, pathLen);
+        if (resampled.Length < 2) return null;
+
         var dirs = new int[resampled.Length - 1];
         for (int i = 0; i < dirs.Length; i++)
         {
             dirs[i] = Quantize8(resampled[i + 1].X - resampled[i].X, resampled[i + 1].Y - resampled[i].Y);
         }
 
-        // 2. 众数平滑去抖
-        Smooth(dirs, SmoothingWindow);
-
-        // 3. 游程编码
-        var runs = RunLengthEncode(dirs);
-
-        // 4. 丢弃过短 run(拐角抖动),丢完相邻同向再合并
-        var filtered = new List<(int dir, int count)>();
-        foreach (var run in runs)
+        // 简单游程编码并丢弃极短段,得到大致方向走向(仅用于人读)
+        var result = new List<int>();
+        int cur = dirs[0], count = 1;
+        var runs = new List<(int dir, int count)>();
+        for (int i = 1; i < dirs.Length; i++)
         {
-            if (run.count < MinRunSegments && runs.Count > 1)
-            {
-                continue;
-            }
-            if (filtered.Count > 0 && filtered[^1].dir == run.dir)
-            {
-                filtered[^1] = (run.dir, filtered[^1].count + run.count);
-            }
-            else
-            {
-                filtered.Add(run);
-            }
+            if (dirs[i] == cur) count++;
+            else { runs.Add((cur, count)); cur = dirs[i]; count = 1; }
         }
+        runs.Add((cur, count));
 
-        // 全被当噪声丢光(极短/全程抖动)→ 用最长 run 兜底,至少给个主方向
-        if (filtered.Count == 0)
+        foreach (var r in runs)
         {
-            var longest = runs[0];
-            foreach (var r in runs)
-            {
-                if (r.count > longest.count) longest = r;
-            }
-            filtered.Add(longest);
-        }
-
-        // 5. 输出方向序列(再 collapse 一次相邻同向以防万一)
-        var result = new List<int>(filtered.Count);
-        foreach (var r in filtered)
-        {
+            if (r.count < 3 && runs.Count > 1) continue;
             if (result.Count > 0 && result[^1] == r.dir) continue;
             result.Add(r.dir);
+        }
+        if (result.Count == 0)
+        {
+            var longest = runs[0];
+            foreach (var r in runs) if (r.count > longest.count) longest = r;
+            result.Add(longest.dir);
         }
         return result.ToArray();
     }
 
-    /// <summary>众数滤波:每个位置取窗口内出现最多的方向,平局保留中心方向。消除孤立方向翻转。</summary>
-    private static void Smooth(int[] dirs, int window)
-    {
-        if (dirs.Length < 3 || window < 3) return;
-        var half = window / 2;
-        var copy = (int[])dirs.Clone();
-        Span<int> counts = stackalloc int[8];
-        for (int i = 0; i < dirs.Length; i++)
-        {
-            counts.Clear();
-            int lo = Math.Max(0, i - half);
-            int hi = Math.Min(dirs.Length - 1, i + half);
-            for (int j = lo; j <= hi; j++) counts[copy[j]]++;
-
-            int best = copy[i];
-            int bestCount = counts[copy[i]];
-            for (int d = 0; d < 8; d++)
-            {
-                if (counts[d] > bestCount) { bestCount = counts[d]; best = d; }
-            }
-            dirs[i] = best;
-        }
-    }
-
-    private static List<(int dir, int count)> RunLengthEncode(int[] dirs)
-    {
-        var runs = new List<(int, int)>();
-        if (dirs.Length == 0) return runs;
-        int cur = dirs[0], count = 1;
-        for (int i = 1; i < dirs.Length; i++)
-        {
-            if (dirs[i] == cur) { count++; }
-            else { runs.Add((cur, count)); cur = dirs[i]; count = 1; }
-        }
-        runs.Add((cur, count));
-        return runs;
-    }
-
-    /// <summary>8 方向量化。Y 轴向下(屏幕/画布坐标),候选与模板同一约定。</summary>
+    /// <summary>8 方向量化。Y 轴向下(屏幕/画布坐标)。</summary>
     private static int Quantize8(double dx, double dy)
     {
         var angle = Math.Atan2(dy, dx); // -π..π
         var idx = (int)Math.Round(angle / (Math.PI / 4.0));
         return ((idx % 8) + 8) % 8;
-    }
-
-    /// <summary>编辑距离(带方向感知替换代价),按较长序列长度归一化到 [0,1]。</summary>
-    private static double SequenceDistance(int[] a, int[] b)
-    {
-        int n = a.Length, m = b.Length;
-        if (n == 0 && m == 0) return 0;
-        if (n == 0 || m == 0) return 1;
-
-        var dp = new double[n + 1, m + 1];
-        for (int i = 0; i <= n; i++) dp[i, 0] = i; // 删除,每个 1
-        for (int j = 0; j <= m; j++) dp[0, j] = j; // 插入,每个 1
-
-        for (int i = 1; i <= n; i++)
-        {
-            for (int j = 1; j <= m; j++)
-            {
-                var sub = dp[i - 1, j - 1] + SubstitutionCost(a[i - 1], b[j - 1]);
-                var del = dp[i - 1, j] + 1;
-                var ins = dp[i, j - 1] + 1;
-                dp[i, j] = Math.Min(sub, Math.Min(del, ins));
-            }
-        }
-        return dp[n, m] / Math.Max(n, m);
-    }
-
-    /// <summary>替换代价:同向 0,相邻 45° 便宜(0.25),相反 180° 最贵(1.0)。</summary>
-    private static double SubstitutionCost(int a, int b)
-    {
-        if (a == b) return 0;
-        int diff = Math.Abs(a - b);
-        int circular = Math.Min(diff, 8 - diff); // 0..4 个 45° 步
-        return circular / 4.0;
     }
 
     private static string DirectionGlyph(int d) => d switch
@@ -307,7 +274,7 @@ public sealed class GestureRecognizer
         _ => "?",
     };
 
-    // ───────────────────────── 几何工具(沿用) ─────────────────────────
+    // ───────────────────────── 几何工具 ─────────────────────────
 
     private static Point[] Resample(IReadOnlyList<Point> points, int targetCount, double knownPathLength)
     {

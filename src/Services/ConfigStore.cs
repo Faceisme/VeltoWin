@@ -143,6 +143,7 @@ public sealed class ConfigStore
             var gestures = payload.Gestures.Count > 0 ? payload.Gestures : DefaultGestures();
             var prefs = payload.Preferences ?? AppPreferences.Default;
             prefs.GesturesEnabled = true; // 启动时强制开启,跟 mac 版一致
+            MigrateRecognitionThreshold(prefs);
             return (gestures, prefs);
         }
         catch
@@ -150,6 +151,21 @@ public sealed class ConfigStore
             // 损坏的配置不应该让 App 起不来 —— 退回默认,旧文件留个 .bak 方便调查
             try { File.Move(_configPath, _configPath + ".bak", overwrite: true); } catch { /* swallow */ }
             return (DefaultGestures(), AppPreferences.Default);
+        }
+    }
+
+    /// <summary>
+    /// 识别算法从"方向序列编辑距离"换成"曲线匹配"后,阈值量级变了。
+    /// 旧配置里的阈值(典型 0.34 / 0.50,在新尺度下过于宽松会乱触发)落在新滑条范围
+    /// [0.05, 0.40] 之外时,重置为新默认值。范围内的值视为用户在新尺度下已自行调过,保留。
+    /// </summary>
+    private static void MigrateRecognitionThreshold(AppPreferences prefs)
+    {
+        const double newMin = 0.05, newMax = 0.40;
+        if (prefs.RecognitionThreshold < newMin || prefs.RecognitionThreshold > newMax)
+        {
+            Logger.Info($"识别阈值 {prefs.RecognitionThreshold:0.00} 超出新尺度范围,迁移为默认 {AppPreferences.Default.RecognitionThreshold:0.00}");
+            prefs.RecognitionThreshold = AppPreferences.Default.RecognitionThreshold;
         }
     }
 
