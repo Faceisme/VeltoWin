@@ -265,6 +265,13 @@ public sealed class GestureEngine : IDisposable
 
             Logger.Info($"gesture matched '{match.Command.Name}' drawn=[{drawn}] distance={match.Distance:0.000} runnerUp={match.RunnerUpDistance:0.000} → {shortcut.DisplayName}");
 
+            if (KeyboardSender.IsBrowserNavigationShortcut(shortcut))
+            {
+                WindowTargeter.PrepareForExecution(target);
+                KeyboardSender.TrySendBrowserNavigationInput(shortcut);
+                return;
+            }
+
             WindowTargeter.PrepareForExecution(target);
 
             // A1:不再固定 Sleep(60)。SetForegroundWindow 后轮询确认目标真的拿到前台,

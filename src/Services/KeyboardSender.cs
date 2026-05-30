@@ -16,9 +16,41 @@ public static class KeyboardSender
     public const ushort VK_LWIN    = 0x5B;
     public const ushort VK_RWIN    = 0x5C;
     public const ushort VK_ESCAPE  = 0x1B;
+    public const ushort VK_LEFT    = 0x25;
+    public const ushort VK_RIGHT   = 0x27;
 
     public static void Send(Shortcut shortcut)
         => SendKey(shortcut.VirtualKey, shortcut.Modifiers);
+
+    public static bool IsBrowserNavigationShortcut(Shortcut shortcut)
+        => BrowserNavigationXButton(shortcut) != 0;
+
+    public static bool TrySendBrowserNavigationInput(Shortcut shortcut)
+    {
+        var xButton = BrowserNavigationXButton(shortcut);
+        if (xButton == 0)
+        {
+            return false;
+        }
+
+        SendMouseXButton(xButton);
+        return true;
+    }
+
+    private static uint BrowserNavigationXButton(Shortcut shortcut)
+    {
+        if (shortcut.Modifiers != ModifierKeys.Alt)
+        {
+            return 0;
+        }
+
+        return shortcut.VirtualKey switch
+        {
+            VK_LEFT => NativeMethods.XBUTTON1,
+            VK_RIGHT => NativeMethods.XBUTTON2,
+            _ => 0,
+        };
+    }
 
     public static void SendKey(uint virtualKey, ModifierKeys modifiers)
     {
@@ -76,6 +108,31 @@ public static class KeyboardSender
         // 但发送通用快捷键时用左 Alt/Ctrl 即可,不展开。
         _ => false,
     };
+
+    private static void SendMouseXButton(uint xButton)
+    {
+        var inputs = new[]
+        {
+            MouseXButton(xButton, down: true),
+            MouseXButton(xButton, down: false),
+        };
+        NativeMethods.SendInput((uint)inputs.Length, inputs, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
+    }
+
+    private static NativeMethods.INPUT MouseXButton(uint xButton, bool down)
+    {
+        var input = new NativeMethods.INPUT
+        {
+            type = NativeMethods.INPUT_MOUSE,
+        };
+        input.U.mi = new NativeMethods.MOUSEINPUT
+        {
+            mouseData = xButton,
+            dwFlags = down ? NativeMethods.MOUSEEVENTF_XDOWN : NativeMethods.MOUSEEVENTF_XUP,
+            dwExtraInfo = NativeMethods.SyntheticEventMarker,
+        };
+        return input;
+    }
 
     /// <summary>合成一次完整的右键单击 —— 给"普通右键单击没触发手势"的场景回放用。</summary>
     public static void ReplayRightClick()

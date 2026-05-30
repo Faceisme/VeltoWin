@@ -72,8 +72,13 @@ public static class NativeMethods
 
     public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     public const uint MOUSEEVENTF_RIGHTUP   = 0x0010;
+    public const uint MOUSEEVENTF_XDOWN     = 0x0080;
+    public const uint MOUSEEVENTF_XUP       = 0x0100;
     public const uint MOUSEEVENTF_ABSOLUTE  = 0x8000;
     public const uint MOUSEEVENTF_MOVE      = 0x0001;
+
+    public const uint XBUTTON1 = 0x0001;
+    public const uint XBUTTON2 = 0x0002;
 
     /// <summary>
     /// dwExtraInfo magic — 用来识别本进程合成的事件,避免低层钩子拿到自己合成的事件再走一遍状态机。
