@@ -1,6 +1,7 @@
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
+using ModernWpf;
 using Velto.Services;
 using Velto.UI;
 
@@ -20,9 +21,16 @@ public partial class App : Application
     private EventWaitHandle? _listenerStopSignal;
     private Thread? _listenerThread;
 
+    public App()
+    {
+        FollowSystemTheme();
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
         InstallGlobalExceptionHandlers();
         Logger.Info($"Velto starting — pid={Environment.ProcessId}, exe={Environment.ProcessPath}");
@@ -64,6 +72,26 @@ public partial class App : Application
             Logger.Error(ex, "OnStartup 致命异常");
             throw;
         }
+    }
+
+    private static void FollowSystemTheme()
+    {
+        ThemeManager.Current.ApplicationTheme = null;
+    }
+
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            FollowSystemTheme();
+
+            foreach (var window in Windows.OfType<SettingsWindow>())
+            {
+                MicaBackdrop.Apply(window);
+            }
+        });
     }
 
     // ──────────────────────── 第二实例唤起设置 ────────────────────────
@@ -129,6 +157,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         Logger.Info($"Velto exiting (code={e.ApplicationExitCode})");
+        SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _listenerStopSignal?.Set();
         _tray?.Dispose();
         _hookThread?.Stop();

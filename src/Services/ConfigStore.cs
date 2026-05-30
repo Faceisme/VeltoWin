@@ -110,7 +110,7 @@ public sealed class ConfigStore
 
         var gestures = backup.Gestures.Select(CloneGesture).ToList();
         var preferences = ClonePreferences(backup.Preferences);
-        preferences.GesturesEnabled = true;
+        MigrateRecognitionThreshold(preferences);
         return (gestures, preferences);
     }
 
@@ -142,7 +142,6 @@ public sealed class ConfigStore
 
             var gestures = payload.Gestures.Count > 0 ? payload.Gestures : DefaultGestures();
             var prefs = payload.Preferences ?? AppPreferences.Default;
-            prefs.GesturesEnabled = true; // 启动时强制开启,跟 mac 版一致
             MigrateRecognitionThreshold(prefs);
             return (gestures, prefs);
         }
