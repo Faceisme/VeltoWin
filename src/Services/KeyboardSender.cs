@@ -19,7 +19,7 @@ public static class KeyboardSender
     public const ushort VK_LEFT    = 0x25;
     public const ushort VK_RIGHT   = 0x27;
 
-    public static void Send(Shortcut shortcut)
+    public static uint Send(Shortcut shortcut)
         => SendKey(shortcut.VirtualKey, shortcut.Modifiers);
 
     public static bool IsBrowserNavigationShortcut(Shortcut shortcut)
@@ -29,21 +29,28 @@ public static class KeyboardSender
         => TrySendBrowserNavigationInput(shortcut, IntPtr.Zero);
 
     public static bool TrySendBrowserNavigationInput(Shortcut shortcut, IntPtr targetHwnd)
+        => TrySendBrowserNavigationInput(shortcut, targetHwnd, out _);
+
+    public static bool TrySendBrowserNavigationInput(Shortcut shortcut, IntPtr targetHwnd, out string method)
     {
+        method = "none";
         var appCommand = BrowserNavigationAppCommand(shortcut);
         if (appCommand == 0)
         {
+            method = "not-browser-navigation";
             return false;
         }
 
         if (TryPostBrowserAppCommand(targetHwnd, appCommand))
         {
+            method = "wm-appcommand";
             return true;
         }
 
         var xButton = BrowserNavigationXButton(shortcut);
         if (xButton == 0) return false;
         SendMouseXButton(xButton);
+        method = "xbutton";
         return true;
     }
 
@@ -89,7 +96,7 @@ public static class KeyboardSender
         return NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APPCOMMAND, hwnd, lParam);
     }
 
-    public static void SendKey(uint virtualKey, ModifierKeys modifiers)
+    public static uint SendKey(uint virtualKey, ModifierKeys modifiers)
     {
         var inputs = new List<NativeMethods.INPUT>(8);
 
@@ -110,7 +117,7 @@ public static class KeyboardSender
         if (modifiers.HasFlag(ModifierKeys.Control)) inputs.Add(Key(VK_CONTROL, down: false));
 
         var arr = inputs.ToArray();
-        NativeMethods.SendInput((uint)arr.Length, arr, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
+        return NativeMethods.SendInput((uint)arr.Length, arr, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
     }
 
     private static NativeMethods.INPUT Key(ushort vk, bool down)

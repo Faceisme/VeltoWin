@@ -33,18 +33,22 @@ public sealed class GestureRecognizer
     // runner-up 安全间隔:最优与次优太接近就拒绝,避免模棱两可时乱触发。
     // 曲线匹配的距离尺度比旧的归一化编辑距离小一个量级,这里相应调小。
     // 方向骨架已经先筛掉单段/多段混淆,这里再要求曲线距离有更明确的胜出间隔。
-    private const double MinimumCommandScoreGap  = 0.045;
-    private const double RelativeCommandScoreGap = 0.40;
-    private const double MinimumSimpleStraightness = 0.72;
-    private const double MinimumSimpleAxisDominance = 1.25;
+    private const double MinimumCommandScoreGap  = 0.004;
+    private const double RelativeCommandScoreGap = 0.08;
+    private const double MinimumSimpleStraightness = 0.90;
+    private const double MinimumSimpleAxisDominance = 10.00;
 
     private ulong _cachedVersion;
     private List<TemplateEntry> _cachedTemplates = new();
 
-    public sealed record Match(GestureCommand Command, double Distance, double? RunnerUpDistance = null);
+    public sealed record Match(
+        GestureCommand Command,
+        double Distance,
+        double? RunnerUpDistance = null,
+        string Strategy = "shape");
 
     /// <summary>每个录制样本的归一化曲线向量(长度 2*ResampleCount,交替存 x,y)。</summary>
-    private sealed record TemplateEntry(GestureCommand Command, double[] Vector, int[] Directions);
+    private sealed record TemplateEntry(GestureCommand Command, double[] Vector, int[] Directions, SimpleDirection? SimpleDirection);
     private sealed record NormalizedStroke(double[] Vector, int[] Directions);
     private enum SimpleDirection { Left, Right, Up, Down }
 
@@ -55,41 +59,56 @@ public sealed class GestureRecognizer
         {
             return null;
         }
+        var candidateSimple = TrySimpleDirection(points, out var drawnSimple)
+            ? drawnSimple
+            : (SimpleDirection?)null;
+        if (candidateSimple is null && IsAmbiguousCardinalSingleSegment(candidate.Directions))
+        {
+            return null;
+        }
 
         // 每个命令取它所有样本里最接近的那个距离
-        var bestByCommand = new Dictionary<Guid, double>();
+        var distancesByCommand = new Dictionary<Guid, List<double>>();
         var commandRef = new Dictionary<Guid, GestureCommand>();
         foreach (var template in NormalizedTemplates(commands, version))
         {
+            if (template.SimpleDirection is { } simpleTemplateDirection && candidateSimple != simpleTemplateDirection)
+            {
+                continue;
+            }
+
             if (!DirectionCompatible(candidate.Directions, template.Directions))
             {
                 continue;
             }
 
             var d = ShapeDistance(candidate.Vector, template.Vector);
-            if (!bestByCommand.TryGetValue(template.Command.Id, out var existing) || d < existing)
+            if (!distancesByCommand.TryGetValue(template.Command.Id, out var distances))
             {
-                bestByCommand[template.Command.Id] = d;
+                distances = new List<double>();
+                distancesByCommand[template.Command.Id] = distances;
                 commandRef[template.Command.Id] = template.Command;
             }
+            distances.Add(d);
         }
 
-        if (bestByCommand.Count == 0) return null;
+        if (distancesByCommand.Count == 0) return null;
 
         Guid bestId = default;
         double bestD = double.PositiveInfinity;
         double runnerUpD = double.PositiveInfinity;
-        foreach (var kv in bestByCommand)
+        foreach (var kv in distancesByCommand)
         {
-            if (kv.Value < bestD)
+            var score = ScoreCommandDistances(kv.Value);
+            if (score < bestD)
             {
                 runnerUpD = bestD;
-                bestD = kv.Value;
+                bestD = score;
                 bestId = kv.Key;
             }
-            else if (kv.Value < runnerUpD)
+            else if (score < runnerUpD)
             {
-                runnerUpD = kv.Value;
+                runnerUpD = score;
             }
         }
 
@@ -152,7 +171,73 @@ public sealed class GestureRecognizer
             matched = command;
         }
 
-        return matched is null ? null : new Match(matched, 0);
+        return matched is null ? null : new Match(matched, 0, null, "simple-direction");
+    }
+
+    public string DescribeSimpleDirection(IReadOnlyList<Point> points)
+        => TrySimpleDirection(points, out var direction) ? direction.ToString() : "none";
+
+    public string DescribeCandidates(
+        IReadOnlyList<Point> points,
+        IReadOnlyList<GestureCommand> commands,
+        ulong version,
+        int maxCount = 5)
+    {
+        var candidate = BuildNormalizedStroke(points);
+        if (candidate is null)
+        {
+            return "candidate=invalid";
+        }
+        var candidateSimple = TrySimpleDirection(points, out var drawnSimple)
+            ? drawnSimple
+            : (SimpleDirection?)null;
+
+        var rows = new Dictionary<Guid, CandidateDiagnostic>();
+        foreach (var template in NormalizedTemplates(commands, version))
+        {
+            if (!rows.TryGetValue(template.Command.Id, out var row))
+            {
+                row = new CandidateDiagnostic(template.Command);
+                rows[template.Command.Id] = row;
+            }
+
+            row.TemplateCount++;
+            if (template.SimpleDirection is { } simpleTemplateDirection && candidateSimple != simpleTemplateDirection)
+            {
+                continue;
+            }
+
+            if (!DirectionCompatible(candidate.Directions, template.Directions))
+            {
+                continue;
+            }
+
+            row.CompatibleCount++;
+            row.AddDistance(ShapeDistance(candidate.Vector, template.Vector));
+        }
+
+        var ordered = rows.Values
+            .OrderBy(r => r.CompatibleCount == 0 ? double.PositiveInfinity : r.Distance)
+            .ThenBy(r => r.Command.Name, StringComparer.Ordinal)
+            .Take(maxCount)
+            .Select((r, i) =>
+            {
+                var distance = r.CompatibleCount == 0 ? "inf" : r.Distance.ToString("0.000");
+                return $"#{i + 1} name='{r.Command.Name}' d={distance} compat={r.CompatibleCount}/{r.TemplateCount}";
+            });
+
+        return string.Join(" | ", ordered);
+    }
+
+    private sealed class CandidateDiagnostic(GestureCommand command)
+    {
+        public GestureCommand Command { get; } = command;
+        public int TemplateCount { get; set; }
+        public int CompatibleCount { get; set; }
+        private readonly List<double> _distances = new();
+        public double Distance => _distances.Count == 0 ? double.PositiveInfinity : ScoreCommandDistances(_distances);
+
+        public void AddDistance(double distance) => _distances.Add(distance);
     }
 
     private static bool TryCommandSimpleDirection(GestureCommand command, out SimpleDirection direction)
@@ -276,7 +361,10 @@ public sealed class GestureRecognizer
                 var normalized = BuildNormalizedStroke(pts);
                 if (normalized is not null)
                 {
-                    list.Add(new TemplateEntry(command, normalized.Vector, normalized.Directions));
+                    var simpleDirection = TrySimpleDirection(pts, out var templateSimpleDirection)
+                        ? templateSimpleDirection
+                        : (SimpleDirection?)null;
+                    list.Add(new TemplateEntry(command, normalized.Vector, normalized.Directions, simpleDirection));
                 }
             }
         }
@@ -410,16 +498,63 @@ public sealed class GestureRecognizer
 
     private static bool DirectionCompatible(int[] a, int[] b)
     {
-        if (a.Length != b.Length) return false;
-
-        for (int i = 0; i < a.Length; i++)
+        var tolerance = a.Length <= 2 || b.Length <= 2 ? 0 : 1;
+        if (a.Length == b.Length)
         {
-            if (DirectionDistance(a[i], b[i]) > 1)
+            for (int i = 0; i < a.Length; i++)
             {
-                return false;
+                if (DirectionDistance(a[i], b[i]) > tolerance)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Real mouse paths often add a tiny leading or trailing segment. Allow insertion,
+        // but preserve stroke order: "NE -> Right" must not match "Right -> NE".
+        return IsOrderedDirectionSubset(a, b, tolerance) || IsOrderedDirectionSubset(b, a, tolerance);
+    }
+
+    private static bool IsOrderedDirectionSubset(int[] shorter, int[] longer, int tolerance)
+    {
+        if (shorter.Length == 0 || longer.Length == 0)
+        {
+            return false;
+        }
+
+        if (shorter.Length > longer.Length)
+        {
+            return false;
+        }
+
+        var matchIndex = 0;
+        foreach (var reference in longer)
+        {
+            if (DirectionDistance(shorter[matchIndex], reference) <= tolerance)
+            {
+                matchIndex++;
+                if (matchIndex == shorter.Length)
+                {
+                    return true;
+                }
             }
         }
-        return true;
+
+        return false;
+    }
+
+    private static double ScoreCommandDistances(IReadOnlyList<double> distances)
+    {
+        if (distances.Count == 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        return distances
+            .OrderBy(static d => d)
+            .Take(Math.Min(3, distances.Count))
+            .Average();
     }
 
     private static int DirectionDistance(int a, int b)
@@ -427,6 +562,9 @@ public sealed class GestureRecognizer
         var d = Math.Abs(a - b);
         return Math.Min(d, 8 - d);
     }
+
+    private static bool IsAmbiguousCardinalSingleSegment(int[] directions)
+        => directions.Length == 1 && directions[0] % 2 == 0;
 
     private static string DirectionGlyph(int d) => d switch
     {

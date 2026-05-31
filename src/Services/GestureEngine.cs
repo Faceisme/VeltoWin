@@ -33,9 +33,10 @@ public sealed class GestureEngine : IDisposable
 
     private readonly object _stateLock = new();
     private readonly ConfigStore _store;
-    private readonly TrailOverlayWindow _overlay;
+    private readonly Func<TrailOverlayWindow> _overlayFactory;
     private readonly Dispatcher _uiDispatcher;
     private readonly GestureRecognizer _recognizer = new();
+    private TrailOverlayWindow? _overlay;
 
     // R3:偏好 / 手势快照用 volatile 引用,hook 线程「无锁读」。
     // ConfigStore 改配置时是整体替换出新的不可变对象,所以持有旧引用始终是个一致的快照,
@@ -53,6 +54,9 @@ public sealed class GestureEngine : IDisposable
     private NativeMethods.POINT _startPointWin;
     private WindowTargeter.Target _startTarget = new(IntPtr.Zero, ShouldActivate: false);
     private long _downTick;
+    private long _gestureSerial;
+    private long _currentGestureId;
+    private long _activeOverlayGestureId;
 
     // 乱画检测:累计路径长 + 外接框。路径长/对角线比值过大 = 来回乱涂 → 作废当前手势。
     private double _pathLength;
@@ -75,16 +79,17 @@ public sealed class GestureEngine : IDisposable
     private const double ScribbleMinPath     = 80;
     private const double ScribbleMinDiagonal = 25;
 
-    public GestureEngine(ConfigStore store, TrailOverlayWindow overlay, Dispatcher uiDispatcher)
+    public GestureEngine(ConfigStore store, Func<TrailOverlayWindow> overlayFactory, Dispatcher uiDispatcher)
     {
         _store = store;
-        _overlay = overlay;
+        _overlayFactory = overlayFactory;
         _uiDispatcher = uiDispatcher;
         _prefsSnapshot = store.Preferences;
         _gestureSnapshot = new GestureSnapshot(store.Gestures, store.GesturesVersion);
 
         _gestureTimeoutTimer = new System.Threading.Timer(OnGestureTimeoutFired, null, Timeout.Infinite, Timeout.Infinite);
         _safetyTimer = new System.Threading.Timer(OnSafetyTimerFired, null, Timeout.Infinite, Timeout.Infinite);
+        GestureDiagnosticLogger.Info($"diagnostics_ready path='{GestureDiagnosticLogger.CurrentPath}'");
 
         store.Changed += _ =>
         {
@@ -132,12 +137,21 @@ public sealed class GestureEngine : IDisposable
         _startPointWin = new NativeMethods.POINT { X = e.X, Y = e.Y };
         _startTarget = WindowTargeter.Resolve(_prefsSnapshot.GestureTargetPolicy, _startPointWin);
         _downTick = Environment.TickCount64;
+        _currentGestureId = ++_gestureSerial;
+        var showTrail = _prefsSnapshot.ShowTrail;
+        System.Threading.Volatile.Write(ref _activeOverlayGestureId, showTrail ? _currentGestureId : 0);
         _points.Clear();
         _points.Add(_startPoint);
         InitMetricsLocked(_startPoint);
         ArmSafetyTimerLocked();
         var snapshot = _points.ToArray();
-        BeginOverlaySynchronously(snapshot);
+        GestureDiagnosticLogger.Info(
+            $"down id={_currentGestureId} x={e.X} y={e.Y} target={FormatHwnd(_startTarget.Hwnd)} " +
+            $"activate={_startTarget.ShouldActivate} policy={_prefsSnapshot.GestureTargetPolicy} " +
+            $"targetInfo=\"{WindowTargeter.Describe(_startTarget)}\" " +
+            $"threshold={_prefsSnapshot.RecognitionThreshold:0.00} timeout={_prefsSnapshot.GestureTimeoutSeconds:0.00} " +
+            $"showTrail={showTrail}");
+        BeginOverlaySynchronously(_currentGestureId, snapshot, showTrail);
         return true; // 吞掉:先看是不是手势
     }
 
@@ -159,9 +173,12 @@ public sealed class GestureEngine : IDisposable
                     _state = State.Gesturing;
                     ArmGestureTimeoutTimerLocked();
                     _lastArmedPoint = p;
+                    GestureDiagnosticLogger.Info(
+                        $"begin_gesture id={_currentGestureId} movement={Distance(_startPoint, p):0.0}px " +
+                        $"points={_points.Count} start=({_startPoint.X:0},{_startPoint.Y:0}) now=({p.X:0},{p.Y:0})");
                     var showTrail = _prefsSnapshot.ShowTrail;
                     var snapshot = _points.ToArray();
-                    _uiDispatcher.BeginInvoke(() => _overlay.UpdateGesture(snapshot, showTrail), DispatcherPriority.Render);
+                    QueueOverlayUpdate(_currentGestureId, snapshot, showTrail);
                 }
                 return false;
             }
@@ -175,6 +192,7 @@ public sealed class GestureEngine : IDisposable
                     if (IsScribbleLocked())
                     {
                         Logger.Info($"gesture cancelled: 乱画作废 (path={_pathLength:0}px)");
+                        GestureDiagnosticLogger.Info($"cancel_scribble id={_currentGestureId} path={_pathLength:0.0}");
                         CancelAndAwaitRightUpLocked();
                         return false;
                     }
@@ -185,7 +203,7 @@ public sealed class GestureEngine : IDisposable
                     }
                     var showTrail = _prefsSnapshot.ShowTrail;
                     var snapshot = _points.ToArray();
-                    _uiDispatcher.BeginInvoke(() => _overlay.UpdateGesture(snapshot, showTrail), DispatcherPriority.Render);
+                    QueueOverlayUpdate(_currentGestureId, snapshot, showTrail);
                 }
                 return false;
             }
@@ -207,10 +225,13 @@ public sealed class GestureEngine : IDisposable
                 // ★关键★:绝不能在这里(钩子回调内 + 持锁)直接 SendInput。
                 // 从 LL 钩子回调内部注入输入,系统会把注入事件排到当前钩子处理之后并串行化,
                 // 实测右键菜单要等 1.5s 以上。改成 ThreadPool 在回调返回后立刻回放,菜单瞬时弹出。
+                var capturedGestureId = _currentGestureId;
+                var elapsedMs = Environment.TickCount64 - _downTick;
+                GestureDiagnosticLogger.Info($"right_click_replay id={capturedGestureId} elapsedMs={elapsedMs}");
                 ResetTrackingLocked(hideOverlay: false);
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    HideOverlaySynchronously();
+                    HideOverlaySynchronously(capturedGestureId);
                     KeyboardSender.ReplayRightClick();
                 });
                 return true;
@@ -218,6 +239,8 @@ public sealed class GestureEngine : IDisposable
             case State.Gesturing:
             {
                 AppendPointLocked(new Point(e.X, e.Y));
+                var capturedGestureId = _currentGestureId;
+                var capturedDownTick = _downTick;
                 var capturedPoints = _points.ToArray();
                 var capturedTarget = _startTarget;
                 var capturedPrefs = _prefsSnapshot;
@@ -229,8 +252,8 @@ public sealed class GestureEngine : IDisposable
                 // 让 hook 线程立刻返回继续接事件。
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    HideOverlaySynchronously();
-                    RunGesture(capturedPoints, capturedTarget, capturedPrefs, snapshot.Gestures, snapshot.Version);
+                    HideOverlaySynchronously(capturedGestureId);
+                    RunGesture(capturedGestureId, capturedDownTick, capturedPoints, capturedTarget, capturedPrefs, snapshot.Gestures, snapshot.Version);
                 });
                 return true;
             }
@@ -243,6 +266,8 @@ public sealed class GestureEngine : IDisposable
     }
 
     private void RunGesture(
+        long gestureId,
+        long downTick,
         Point[] points,
         WindowTargeter.Target target,
         AppPreferences prefs,
@@ -253,10 +278,16 @@ public sealed class GestureEngine : IDisposable
         {
             // 候选方向序列写进日志 —— 误识别时一眼能看出"我画的"被识成了什么形状
             var drawn = _recognizer.DescribeSequence(points);
+            var simpleDirection = _recognizer.DescribeSimpleDirection(points);
+            var candidates = _recognizer.DescribeCandidates(points, gestures, version);
+            var trace = DescribeTrace(points, downTick);
             var match = _recognizer.BestMatch(points, gestures, version, prefs.RecognitionThreshold);
             if (match is null)
             {
                 Logger.Info($"gesture no match: drawn=[{drawn}] (points={points.Length}, threshold={prefs.RecognitionThreshold:0.00})");
+                GestureDiagnosticLogger.Info(
+                    $"result id={gestureId} status=no_match {trace} drawn=[{drawn}] simple={simpleDirection} " +
+                    $"threshold={prefs.RecognitionThreshold:0.00} candidates=[{candidates}]");
                 return;
             }
 
@@ -264,15 +295,29 @@ public sealed class GestureEngine : IDisposable
             if (shortcut is null)
             {
                 Logger.Info($"gesture matched '{match.Command.Name}' (drawn=[{drawn}]) but no shortcut bound");
+                GestureDiagnosticLogger.Info(
+                    $"result id={gestureId} status=no_shortcut command='{match.Command.Name}' strategy={match.Strategy} " +
+                    $"{trace} drawn=[{drawn}] simple={simpleDirection} distance={match.Distance:0.000} " +
+                    $"runnerUp={FormatNullable(match.RunnerUpDistance)} candidates=[{candidates}]");
                 return;
             }
 
             Logger.Info($"gesture matched '{match.Command.Name}' drawn=[{drawn}] distance={match.Distance:0.000} runnerUp={match.RunnerUpDistance:0.000} → {shortcut.DisplayName}");
 
+            GestureDiagnosticLogger.Info(
+                $"result id={gestureId} status=matched command='{match.Command.Name}' strategy={match.Strategy} " +
+                $"{trace} drawn=[{drawn}] simple={simpleDirection} distance={match.Distance:0.000} " +
+                $"runnerUp={FormatNullable(match.RunnerUpDistance)} shortcut='{shortcut.DisplayName}' " +
+                $"target={FormatHwnd(target.Hwnd)} activate={target.ShouldActivate} " +
+                $"targetInfo=\"{WindowTargeter.Describe(target)}\" candidates=[{candidates}]");
+
             if (KeyboardSender.IsBrowserNavigationShortcut(shortcut))
             {
                 WindowTargeter.PrepareForExecution(target);
-                KeyboardSender.TrySendBrowserNavigationInput(shortcut, target.Hwnd);
+                var sent = KeyboardSender.TrySendBrowserNavigationInput(shortcut, target.Hwnd, out var method);
+                GestureDiagnosticLogger.Info(
+                    $"execute id={gestureId} type=browser_navigation sent={sent} method={method} " +
+                    $"target={FormatHwnd(target.Hwnd)} targetInfo=\"{WindowTargeter.Describe(target)}\"");
                 return;
             }
 
@@ -285,15 +330,68 @@ public sealed class GestureEngine : IDisposable
             {
                 WaitForForeground(target.Hwnd, timeoutMs: 150);
             }
-            KeyboardSender.Send(shortcut);
+            var sentInputs = KeyboardSender.Send(shortcut);
+            GestureDiagnosticLogger.Info(
+                $"execute id={gestureId} type=keyboard shortcut='{shortcut.DisplayName}' sentInputs={sentInputs} " +
+                $"target={FormatHwnd(target.Hwnd)} targetInfo=\"{WindowTargeter.Describe(target)}\"");
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "RunGesture");
+            GestureDiagnosticLogger.Error(ex, $"RunGesture id={gestureId}");
         }
     }
 
     /// <summary>轮询等待目标窗口拿到前台,拿到立即返回;超时也返回(已尽力)。</summary>
+    private static string DescribeTrace(IReadOnlyList<Point> points, long downTick)
+    {
+        if (points.Count == 0)
+        {
+            return "points=0";
+        }
+
+        var first = points[0];
+        var last = points[^1];
+        var dx = last.X - first.X;
+        var dy = last.Y - first.Y;
+        var displacement = Math.Sqrt(dx * dx + dy * dy);
+        var path = 0.0;
+        var minX = first.X;
+        var maxX = first.X;
+        var minY = first.Y;
+        var maxY = first.Y;
+        for (int i = 1; i < points.Count; i++)
+        {
+            path += Distance(points[i - 1], points[i]);
+            minX = Math.Min(minX, points[i].X);
+            maxX = Math.Max(maxX, points[i].X);
+            minY = Math.Min(minY, points[i].Y);
+            maxY = Math.Max(maxY, points[i].Y);
+        }
+
+        var straightness = path <= 0 ? 0 : displacement / path;
+        var direction = Math.Abs(dx) >= Math.Abs(dy)
+            ? (dx < 0 ? "Left" : "Right")
+            : (dy < 0 ? "Up" : "Down");
+        var smallerAxis = Math.Min(Math.Abs(dx), Math.Abs(dy));
+        var axisRatio = smallerAxis <= 0
+            ? 999.0
+            : Math.Max(Math.Abs(dx), Math.Abs(dy)) / smallerAxis;
+        var elapsedMs = Math.Max(0, Environment.TickCount64 - downTick);
+
+        return
+            $"points={points.Count} elapsedMs={elapsedMs} path={path:0.0} displacement={displacement:0.0} " +
+            $"straightness={straightness:0.000} direction={direction} axisRatio={axisRatio:0.00} " +
+            $"dx={dx:0.0} dy={dy:0.0} bbox=({minX:0},{minY:0},{maxX:0},{maxY:0}) " +
+            $"start=({first.X:0},{first.Y:0}) end=({last.X:0},{last.Y:0})";
+    }
+
+    private static string FormatHwnd(IntPtr hwnd)
+        => "0x" + unchecked((ulong)hwnd.ToInt64()).ToString("X");
+
+    private static string FormatNullable(double? value)
+        => value.HasValue ? value.Value.ToString("0.000") : "null";
+
     private static void WaitForForeground(IntPtr hwnd, int timeoutMs)
     {
         var deadline = Environment.TickCount64 + timeoutMs;
@@ -373,43 +471,126 @@ public sealed class GestureEngine : IDisposable
 
     private void HideOverlayAsync()
     {
-        _uiDispatcher.BeginInvoke(() => _overlay.EndGesture(), DispatcherPriority.Render);
+        var gestureId = System.Threading.Volatile.Read(ref _activeOverlayGestureId);
+        if (gestureId == 0)
+        {
+            GestureDiagnosticLogger.Info("overlay_end_async_skipped id=none");
+            return;
+        }
+
+        if (System.Threading.Interlocked.CompareExchange(ref _activeOverlayGestureId, 0, gestureId) != gestureId)
+        {
+            GestureDiagnosticLogger.Info($"overlay_end_async_skipped id={gestureId} reason=stale");
+            return;
+        }
+
+        GestureDiagnosticLogger.Info($"overlay_end_async id={gestureId}");
+        _uiDispatcher.BeginInvoke(() => _overlay?.EndGesture(), DispatcherPriority.Render);
     }
 
-    private void BeginOverlaySynchronously(IReadOnlyList<Point> points)
+    private void BeginOverlaySynchronously(long gestureId, IReadOnlyList<Point> points, bool showTrail)
     {
-        if (_uiDispatcher.HasShutdownStarted || _uiDispatcher.HasShutdownFinished) return;
+        if (!showTrail)
+        {
+            GestureDiagnosticLogger.Info($"overlay_begin_skipped id={gestureId} reason=trail_disabled");
+            return;
+        }
 
+        if (_uiDispatcher.HasShutdownStarted || _uiDispatcher.HasShutdownFinished)
+        {
+            GestureDiagnosticLogger.Info($"overlay_begin_skipped id={gestureId} reason=dispatcher_shutdown");
+            return;
+        }
+
+        var started = Environment.TickCount64;
         try
         {
             if (_uiDispatcher.CheckAccess())
             {
-                _overlay.BeginGesture(points, showTrail: false);
+                if (IsOverlayGestureCurrent(gestureId))
+                {
+                    GetOverlay().BeginGesture(points, showTrail: true);
+                }
             }
             else
             {
-                _uiDispatcher.Invoke(() => _overlay.BeginGesture(points, showTrail: false), DispatcherPriority.Send);
+                _uiDispatcher.Invoke(() =>
+                {
+                    if (IsOverlayGestureCurrent(gestureId))
+                    {
+                        GetOverlay().BeginGesture(points, showTrail: true);
+                    }
+                }, DispatcherPriority.Send);
             }
+            GestureDiagnosticLogger.Info(
+                $"overlay_begin id={gestureId} elapsedMs={Environment.TickCount64 - started} points={points.Count}");
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "BeginOverlaySynchronously");
+            GestureDiagnosticLogger.Error(ex, $"BeginOverlaySynchronously id={gestureId}");
         }
     }
 
-    private void HideOverlaySynchronously()
+    private void HideOverlaySynchronously(long? gestureId = null)
     {
-        if (_uiDispatcher.HasShutdownStarted || _uiDispatcher.HasShutdownFinished) return;
+        if (gestureId is { } id)
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref _activeOverlayGestureId, 0, id) != id)
+            {
+                GestureDiagnosticLogger.Info($"overlay_end_skipped id={id} reason=stale");
+                return;
+            }
+        }
+        else
+        {
+            System.Threading.Volatile.Write(ref _activeOverlayGestureId, 0);
+        }
 
+        if (_uiDispatcher.HasShutdownStarted || _uiDispatcher.HasShutdownFinished)
+        {
+            GestureDiagnosticLogger.Info($"overlay_end_skipped id={gestureId?.ToString() ?? "none"} reason=dispatcher_shutdown");
+            return;
+        }
+
+        var started = Environment.TickCount64;
         try
         {
-            _uiDispatcher.Invoke(() => _overlay.EndGesture(), DispatcherPriority.Send);
+            _uiDispatcher.Invoke(() => _overlay?.EndGesture(), DispatcherPriority.Send);
+            GestureDiagnosticLogger.Info(
+                $"overlay_end id={gestureId?.ToString() ?? "none"} elapsedMs={Environment.TickCount64 - started}");
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "HideOverlaySynchronously");
+            GestureDiagnosticLogger.Error(ex, $"HideOverlaySynchronously id={gestureId?.ToString() ?? "none"}");
         }
     }
+
+    private void QueueOverlayUpdate(long gestureId, IReadOnlyList<Point> points, bool showTrail)
+    {
+        if (!showTrail)
+        {
+            return;
+        }
+
+        _uiDispatcher.BeginInvoke(() =>
+        {
+            if (!IsOverlayGestureCurrent(gestureId))
+            {
+                GestureDiagnosticLogger.Info($"overlay_update_skipped id={gestureId} reason=stale");
+                return;
+            }
+
+            GetOverlay().UpdateGesture(points, showTrail);
+        }, DispatcherPriority.Render);
+    }
+
+    private TrailOverlayWindow GetOverlay()
+        => _overlay ??= _overlayFactory();
+
+    private bool IsOverlayGestureCurrent(long gestureId)
+        => System.Threading.Volatile.Read(ref _activeOverlayGestureId) == gestureId;
 
     private void ArmSafetyTimerLocked()
     {
@@ -427,7 +608,11 @@ public sealed class GestureEngine : IDisposable
     {
         lock (_stateLock)
         {
-            if (_state == State.Gesturing) CancelAndAwaitRightUpLocked();
+            if (_state == State.Gesturing)
+            {
+                GestureDiagnosticLogger.Info($"cancel_timeout id={_currentGestureId}");
+                CancelAndAwaitRightUpLocked();
+            }
         }
     }
 
@@ -435,7 +620,11 @@ public sealed class GestureEngine : IDisposable
     {
         lock (_stateLock)
         {
-            if (_state != State.Idle) CancelAndAwaitRightUpLocked();
+            if (_state != State.Idle)
+            {
+                GestureDiagnosticLogger.Info($"cancel_safety_timeout id={_currentGestureId} state={_state}");
+                CancelAndAwaitRightUpLocked();
+            }
         }
     }
 

@@ -5,7 +5,7 @@
         AllowsTransparency="True"
         Background="Transparent"
         ShowInTaskbar="False"
-        Topmost="True"
+        Topmost="False"
         IsHitTestVisible="False"
         Focusable="False"
         ShowActivated="False"
@@ -13,7 +13,7 @@
         Visibility="Hidden">
     <Canvas x:Name="HostCanvas">
         <Rectangle x:Name="InputShield"
-                   Fill="#01000000"
+                   Fill="Transparent"
                    Visibility="Collapsed"/>
         <Polyline x:Name="TrailLine"
                   Stroke="#00B8B8"

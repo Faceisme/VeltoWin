@@ -10,11 +10,14 @@ namespace Velto;
 public partial class App : Application
 {
     private const string ShowSettingsSignalName = "Velto.ShowSettings";
+    private static readonly bool EnableShellTransitionDiagnostics =
+        string.Equals(Environment.GetEnvironmentVariable("VELTO_SHELL_DIAG"), "1", StringComparison.Ordinal);
 
     private HookThread? _hookThread;
     private TrailOverlayWindow? _overlay;
     private GestureEngine? _engine;
     private TrayIcon? _tray;
+    private ShellTransitionDiagnostic? _shellDiagnostic;
     private System.Threading.Mutex? _instanceMutex;
 
     private EventWaitHandle? _showSettingsSignal;
@@ -52,16 +55,16 @@ public partial class App : Application
             // 在开始菜单放一个快捷方式,保证"开始菜单搜索 Velto"能找到程序。
             StartMenuShortcut.Ensure();
 
-            _overlay = new TrailOverlayWindow();
-            // 先 Show + Hide 一次让 hwnd 真的建出来,后续从 hook 线程 BeginInvoke 过来时不用走 lazy realize。
-            _overlay.Show();
-            _overlay.Hide();
-
-            _engine = new GestureEngine(store, _overlay, Dispatcher);
+            _engine = new GestureEngine(store, CreateOverlay, Dispatcher);
 
             _hookThread = new HookThread();
             _hookThread.Start(_engine.HandleMouseEvent);
             Logger.Info("MouseHook installed on dedicated input thread");
+
+            if (EnableShellTransitionDiagnostics)
+            {
+                _shellDiagnostic = new ShellTransitionDiagnostic();
+            }
 
             _tray = new TrayIcon(store);
             StartShowSettingsListener();
@@ -78,6 +81,9 @@ public partial class App : Application
     {
         ThemeManager.Current.ApplicationTheme = null;
     }
+
+    private TrailOverlayWindow CreateOverlay()
+        => _overlay ??= new TrailOverlayWindow();
 
     private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
     {
@@ -160,6 +166,7 @@ public partial class App : Application
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _listenerStopSignal?.Set();
         _tray?.Dispose();
+        _shellDiagnostic?.Dispose();
         _hookThread?.Stop();
         _engine?.Dispose();
         _overlay?.Close();

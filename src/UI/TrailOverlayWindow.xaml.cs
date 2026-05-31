@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using Velto.Services;
 using Velto.Win32;
 
 namespace Velto.UI;
@@ -62,6 +63,9 @@ public partial class TrailOverlayWindow : Window
         _virtualOriginY = y;
         _dpiX = dpiX;
         _dpiY = dpiY;
+        GestureDiagnosticLogger.Info(
+            $"overlay_bounds left={Left:0.0} top={Top:0.0} width={Width:0.0} height={Height:0.0} " +
+            $"virtual=({x},{y},{w},{h}) dpi=({dpiX:0.000},{dpiY:0.000})");
     }
 
     private double _virtualOriginX, _virtualOriginY;
@@ -69,18 +73,28 @@ public partial class TrailOverlayWindow : Window
 
     public void BeginGesture(IReadOnlyList<Point> points, bool showTrail)
     {
+        if (!showTrail)
+        {
+            EndGesture();
+            return;
+        }
+
         EnsureVisible();
-        SetBlocksInput(true);
-        if (showTrail) DrawTrail(points);
-        else ClearTrail();
+        SetBlocksInput(false);
+        DrawTrail(points);
     }
 
     public void UpdateGesture(IReadOnlyList<Point> points, bool showTrail)
     {
+        if (!showTrail)
+        {
+            EndGesture();
+            return;
+        }
+
         EnsureVisible();
-        SetBlocksInput(true);
-        if (showTrail) DrawTrail(points);
-        else ClearTrail();
+        SetBlocksInput(false);
+        DrawTrail(points);
     }
 
     public void EndGesture()
@@ -88,6 +102,7 @@ public partial class TrailOverlayWindow : Window
         ClearTrail();
         SetBlocksInput(false);
         Visibility = Visibility.Hidden;
+        Topmost = false;
     }
 
     public void Show(IReadOnlyList<Point> points)
@@ -110,6 +125,7 @@ public partial class TrailOverlayWindow : Window
         if (!IsVisible)
         {
             ApplyVirtualScreenBounds();
+            Topmost = true;
             Visibility = Visibility.Visible;
         }
     }
@@ -136,6 +152,8 @@ public partial class TrailOverlayWindow : Window
             ex |= NativeMethods.WS_EX_TRANSPARENT;
         }
         NativeMethods.SetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE, (IntPtr)ex);
+        GestureDiagnosticLogger.Info(
+            $"overlay_blocks_input blocks={blocksInput} hwnd=0x{unchecked((ulong)hwnd.ToInt64()):X} ex=0x{unchecked((ulong)ex):X}");
     }
 
     private void DrawTrail(IReadOnlyList<Point> points)
