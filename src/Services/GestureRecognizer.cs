@@ -69,15 +69,31 @@ public sealed class GestureRecognizer
 
         // 每个命令取它所有样本里最接近的那个距离
         var distancesByCommand = new Dictionary<Guid, List<double>>();
+        var templates = NormalizedTemplates(commands, version);
+        var exactDirectionCommands = ExactDirectionCommandIds(candidate.Directions, templates);
+        var requireExactDirection = exactDirectionCommands.Count > 0;
+        if (!requireExactDirection && HasUnstableAlternatingDirections(candidate.Directions))
+        {
+            return null;
+        }
+
         var commandRef = new Dictionary<Guid, GestureCommand>();
-        foreach (var template in NormalizedTemplates(commands, version))
+        foreach (var template in templates)
         {
             if (template.SimpleDirection is { } simpleTemplateDirection && candidateSimple != simpleTemplateDirection)
             {
                 continue;
             }
 
-            if (!DirectionCompatible(candidate.Directions, template.Directions))
+            var exactDirection = ExactDirectionCompatible(candidate.Directions, template.Directions);
+            if (requireExactDirection)
+            {
+                if (!exactDirection)
+                {
+                    continue;
+                }
+            }
+            else if (!DirectionCompatible(candidate.Directions, template.Directions))
             {
                 continue;
             }
@@ -193,7 +209,11 @@ public sealed class GestureRecognizer
             : (SimpleDirection?)null;
 
         var rows = new Dictionary<Guid, CandidateDiagnostic>();
-        foreach (var template in NormalizedTemplates(commands, version))
+        var templates = NormalizedTemplates(commands, version);
+        var exactDirectionCommands = ExactDirectionCommandIds(candidate.Directions, templates);
+        var requireExactDirection = exactDirectionCommands.Count > 0;
+        var unstableAlternating = !requireExactDirection && HasUnstableAlternatingDirections(candidate.Directions);
+        foreach (var template in templates)
         {
             if (!rows.TryGetValue(template.Command.Id, out var row))
             {
@@ -207,7 +227,15 @@ public sealed class GestureRecognizer
                 continue;
             }
 
-            if (!DirectionCompatible(candidate.Directions, template.Directions))
+            var exactDirection = ExactDirectionCompatible(candidate.Directions, template.Directions);
+            if (requireExactDirection)
+            {
+                if (!exactDirection)
+                {
+                    continue;
+                }
+            }
+            else if (unstableAlternating || !DirectionCompatible(candidate.Directions, template.Directions))
             {
                 continue;
             }
@@ -514,6 +542,59 @@ public sealed class GestureRecognizer
         // Real mouse paths often add a tiny leading or trailing segment. Allow insertion,
         // but preserve stroke order: "NE -> Right" must not match "Right -> NE".
         return IsOrderedDirectionSubset(a, b, tolerance) || IsOrderedDirectionSubset(b, a, tolerance);
+    }
+
+    private static HashSet<Guid> ExactDirectionCommandIds(int[] directions, IReadOnlyList<TemplateEntry> templates)
+    {
+        var result = new HashSet<Guid>();
+        foreach (var template in templates)
+        {
+            if (ExactDirectionCompatible(directions, template.Directions))
+            {
+                result.Add(template.Command.Id);
+            }
+        }
+
+        return result;
+    }
+
+    private static bool ExactDirectionCompatible(int[] a, int[] b)
+    {
+        if (a.Length != b.Length)
+        {
+            return false;
+        }
+
+        var tolerance = a.Length <= 2 || b.Length <= 2 ? 0 : 1;
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (DirectionDistance(a[i], b[i]) > tolerance)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasUnstableAlternatingDirections(int[] directions)
+    {
+        if (directions.Length < 4)
+        {
+            return false;
+        }
+
+        for (int i = 2; i < directions.Length; i++)
+        {
+            if (directions[i] == directions[i - 2] &&
+                directions[i] != directions[i - 1] &&
+                DirectionDistance(directions[i], directions[i - 1]) <= 1)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsOrderedDirectionSubset(int[] shorter, int[] longer, int tolerance)

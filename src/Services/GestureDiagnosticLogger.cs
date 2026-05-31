@@ -7,6 +7,11 @@ public static class GestureDiagnosticLogger
 {
     private static readonly object Lock = new();
 
+    public static bool Enabled { get; } =
+        IsSwitchEnabled("VELTO_DIAG") ||
+        IsSwitchEnabled("VELTO_GESTURE_DIAG") ||
+        IsSwitchEnabled("VELTO_SHELL_DIAG");
+
     public static string CurrentPath
     {
         get
@@ -21,8 +26,16 @@ public static class GestureDiagnosticLogger
     public static void Error(Exception ex, string context)
         => Write("ERROR", $"{context} :: {ex.GetType().Name}: {ex.Message}");
 
+    public static bool IsSwitchEnabled(string name)
+        => string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal);
+
     private static void Write(string level, string message)
     {
+        if (!Enabled)
+        {
+            return;
+        }
+
         var line = $"{DateTime.Now:HH:mm:ss.fff} [{level}] pid={Environment.ProcessId} {message}{Environment.NewLine}";
         try
         {

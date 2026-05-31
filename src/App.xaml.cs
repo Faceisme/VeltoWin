@@ -11,7 +11,8 @@ public partial class App : Application
 {
     private const string ShowSettingsSignalName = "Velto.ShowSettings";
     private static readonly bool EnableShellTransitionDiagnostics =
-        string.Equals(Environment.GetEnvironmentVariable("VELTO_SHELL_DIAG"), "1", StringComparison.Ordinal);
+        GestureDiagnosticLogger.IsSwitchEnabled("VELTO_DIAG") ||
+        GestureDiagnosticLogger.IsSwitchEnabled("VELTO_SHELL_DIAG");
 
     private HookThread? _hookThread;
     private TrailOverlayWindow? _overlay;
