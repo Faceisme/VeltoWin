@@ -35,8 +35,10 @@ public sealed class GestureRecognizer
     // 方向骨架已经先筛掉单段/多段混淆,这里再要求曲线距离有更明确的胜出间隔。
     private const double MinimumCommandScoreGap  = 0.004;
     private const double RelativeCommandScoreGap = 0.08;
-    private const double MinimumSimpleStraightness = 0.90;
-    private const double MinimumSimpleAxisDominance = 10.00;
+    private const double MinimumSimpleStraightness = 0.85;
+    // 2.4 is roughly the same angle boundary used by the 8-way quantizer for
+    // cardinal directions, while still rejecting obvious diagonal strokes.
+    private const double MinimumSimpleAxisDominance = 2.40;
 
     private ulong _cachedVersion;
     private List<TemplateEntry> _cachedTemplates = new();
