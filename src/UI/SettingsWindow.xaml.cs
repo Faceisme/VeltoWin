@@ -18,6 +18,7 @@ public partial class SettingsWindow : Window
     private bool _draftAutoStart;
     private bool _hasUnsavedChanges;
     private bool _isApplyingDraft;
+    private IDisposable? _activeGestureSuspension;
 
     // XAML 加载 Slider 时会触发 ValueChanged,所以默认先屏蔽事件。
     private bool _suppressEvents = true;
@@ -45,12 +46,36 @@ public partial class SettingsWindow : Window
 
         // 设置窗口活动时暂停全局手势,让右键能落到录制画布(以及让窗口内右键菜单可用)。
         // 失活/关闭时立即恢复,保证别处的手势照常工作。
-        Activated += (_, _) => GestureGate.Suspended = true;
-        Deactivated += (_, _) => GestureGate.Suspended = false;
-        Closed += (_, _) => GestureGate.Suspended = false;
+        Activated += (_, _) => SuspendGesturesWhileActive();
+        Deactivated += (_, _) => ResumeGesturesAfterInactive();
+        Closed += (_, _) => ResumeGesturesAfterInactive();
     }
 
     private Guid? SelectedGestureId => (GestureList.SelectedItem as GestureRow)?.Command.Id;
+
+    private void SuspendGesturesWhileActive()
+        => _activeGestureSuspension ??= GestureGate.Suspend();
+
+    private void ResumeGesturesAfterInactive()
+    {
+        _activeGestureSuspension?.Dispose();
+        _activeGestureSuspension = null;
+    }
+
+    private MessageBoxResult ShowMessageBox(
+        string text,
+        MessageBoxButton buttons,
+        MessageBoxImage icon)
+    {
+        using var _ = GestureGate.Suspend();
+        return MessageBox.Show(this, text, "Velto", buttons, icon);
+    }
+
+    private bool ShowFileDialog(FileDialog dialog)
+    {
+        using var _ = GestureGate.Suspend();
+        return dialog.ShowDialog(this) == true;
+    }
 
     private void OnStoreChanged(ConfigStore.ChangeReason reason)
     {
@@ -212,7 +237,7 @@ public partial class SettingsWindow : Window
     private void OnClearAllGestures(object sender, RoutedEventArgs e)
     {
         if (_draftGestures.Count == 0) return;
-        if (MessageBox.Show(this, "确定清空所有手势和样本吗?", "Velto", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
+        if (ShowMessageBox("确定清空所有手势和样本吗?", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
             != MessageBoxResult.OK) return;
 
         _draftGestures.Clear();
@@ -234,7 +259,7 @@ public partial class SettingsWindow : Window
     {
         var row = GestureList.SelectedItem as GestureRow;
         if (row is null) return;
-        if (MessageBox.Show(this, $"确定删除手势「{row.Command.Name}」?", "Velto", MessageBoxButton.OKCancel, MessageBoxImage.Question)
+        if (ShowMessageBox($"确定删除手势「{row.Command.Name}」?", MessageBoxButton.OKCancel, MessageBoxImage.Question)
             != MessageBoxResult.OK) return;
 
         var oldIndex = GestureList.SelectedIndex;
@@ -278,10 +303,8 @@ public partial class SettingsWindow : Window
         if (!show)
         {
             // 隐藏托盘后必须告诉用户怎么回来,否则等于把设置入口锁死了。
-            MessageBox.Show(
-                this,
+            ShowMessageBox(
                 "保存后托盘图标会隐藏。\n\n要再次打开本设置窗口,直接重新运行 Velto(双击 Velto.exe)即可 —— 已在运行的实例会把设置窗口唤起。",
-                "Velto",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
@@ -338,7 +361,7 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "保存失败:" + ex.Message, "Velto", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowMessageBox("保存失败:" + ex.Message, MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
         finally
@@ -354,10 +377,8 @@ public partial class SettingsWindow : Window
     {
         if (!_hasUnsavedChanges) return;
 
-        var result = MessageBox.Show(
-            this,
+        var result = ShowMessageBox(
             "有未保存的修改。要先保存吗?",
-            "Velto",
             MessageBoxButton.YesNoCancel,
             MessageBoxImage.Question);
 
@@ -396,21 +417,21 @@ public partial class SettingsWindow : Window
             FileName = $"Velto-{DateTime.Now:yyyyMMdd-HHmm}.json",
             Filter = "JSON (*.json)|*.json",
         };
-        if (dlg.ShowDialog(this) != true) return;
+        if (!ShowFileDialog(dlg)) return;
         try
         {
             File.WriteAllBytes(dlg.FileName, _store.ExportBackup());
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "导出失败:" + ex.Message, "Velto", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowMessageBox("导出失败:" + ex.Message, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
     private void OnImport(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog { Filter = "JSON (*.json)|*.json" };
-        if (dlg.ShowDialog(this) != true) return;
+        if (!ShowFileDialog(dlg)) return;
         try
         {
             var (gestures, preferences) = _store.ReadBackup(File.ReadAllBytes(dlg.FileName));
@@ -423,7 +444,7 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "导入失败:" + ex.Message, "Velto", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowMessageBox("导入失败:" + ex.Message, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

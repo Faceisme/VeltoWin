@@ -32,14 +32,49 @@ public sealed class ConfigStore
         BackupImport,
     }
 
-    public IReadOnlyList<GestureCommand> Gestures => _gestures;
-    public AppPreferences Preferences => _preferences;
+    public IReadOnlyList<GestureCommand> Gestures
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _gestures.Select(CloneGesture).ToList();
+            }
+        }
+    }
+
+    public AppPreferences Preferences
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return ClonePreferences(_preferences);
+            }
+        }
+    }
 
     /// <summary>每次手势列表改动 +1。识别器拿来做 O(1) 缓存失效判断。</summary>
-    public ulong GesturesVersion { get; private set; }
+    public ulong GesturesVersion
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _gesturesVersion;
+            }
+        }
+    }
 
+    public sealed record Snapshot(
+        IReadOnlyList<GestureCommand> Gestures,
+        AppPreferences Preferences,
+        ulong GesturesVersion);
+
+    private readonly object _sync = new();
     private List<GestureCommand> _gestures;
     private AppPreferences _preferences;
+    private ulong _gesturesVersion;
 
     private readonly string _configPath;
     private readonly JsonSerializerOptions _jsonOptions;
@@ -61,40 +96,69 @@ public sealed class ConfigStore
         var (gestures, prefs) = Load();
         _gestures = gestures;
         _preferences = prefs;
-        GesturesVersion = 1;
+        _gesturesVersion = 1;
+    }
+
+    public Snapshot ReadSnapshot()
+    {
+        lock (_sync)
+        {
+            return new Snapshot(
+                _gestures.Select(CloneGesture).ToList(),
+                ClonePreferences(_preferences),
+                _gesturesVersion);
+        }
     }
 
     public void UpdateGestures(Action<List<GestureCommand>> mutate)
     {
-        mutate(_gestures);
-        GesturesVersion++;
-        Save();
+        lock (_sync)
+        {
+            var nextGestures = _gestures.Select(CloneGesture).ToList();
+            var nextPreferences = ClonePreferences(_preferences);
+            mutate(nextGestures);
+
+            CommitLocked(nextGestures, nextPreferences, gesturesChanged: true);
+        }
         Changed?.Invoke(ChangeReason.Gestures);
     }
 
     public void UpdatePreferences(Action<AppPreferences> mutate)
     {
-        mutate(_preferences);
-        Save();
+        lock (_sync)
+        {
+            var nextGestures = _gestures.Select(CloneGesture).ToList();
+            var nextPreferences = ClonePreferences(_preferences);
+            mutate(nextPreferences);
+
+            CommitLocked(nextGestures, nextPreferences, gesturesChanged: false);
+        }
         Changed?.Invoke(ChangeReason.Preferences);
     }
 
     public void ReplaceSettings(IEnumerable<GestureCommand> gestures, AppPreferences preferences)
     {
-        _gestures = gestures.Select(CloneGesture).ToList();
-        _preferences = ClonePreferences(preferences);
-        GesturesVersion++;
-        Save();
+        lock (_sync)
+        {
+            CommitLocked(
+                gestures.Select(CloneGesture).ToList(),
+                ClonePreferences(preferences),
+                gesturesChanged: true);
+        }
         Changed?.Invoke(ChangeReason.Settings);
     }
 
     public byte[] ExportBackup()
     {
-        var backup = new BackupFile
+        BackupFile backup;
+        lock (_sync)
         {
-            Gestures = _gestures.Select(CloneGesture).ToList(),
-            Preferences = ClonePreferences(_preferences),
-        };
+            backup = new BackupFile
+            {
+                Gestures = _gestures.Select(CloneGesture).ToList(),
+                Preferences = ClonePreferences(_preferences),
+            };
+        }
         return JsonSerializer.SerializeToUtf8Bytes(backup, _jsonOptions);
     }
 
@@ -120,10 +184,10 @@ public sealed class ConfigStore
     public void ImportBackup(byte[] data)
     {
         var (gestures, preferences) = ReadBackup(data);
-        _gestures = gestures;
-        _preferences = preferences;
-        GesturesVersion++;
-        Save();
+        lock (_sync)
+        {
+            CommitLocked(gestures, preferences, gesturesChanged: true);
+        }
         Changed?.Invoke(ChangeReason.BackupImport);
     }
 
@@ -178,19 +242,70 @@ public sealed class ConfigStore
         }
     }
 
-    private void Save()
+    private void CommitLocked(
+        List<GestureCommand> nextGestures,
+        AppPreferences nextPreferences,
+        bool gesturesChanged)
+    {
+        var committedGestures = nextGestures.Select(CloneGesture).ToList();
+        var committedPreferences = ClonePreferences(nextPreferences);
+
+        Save(committedGestures, committedPreferences);
+
+        _gestures = committedGestures;
+        _preferences = committedPreferences;
+        if (gesturesChanged)
+        {
+            _gesturesVersion++;
+        }
+    }
+
+    private void Save(IReadOnlyList<GestureCommand> gestures, AppPreferences preferences)
     {
         var payload = new Payload
         {
-            Gestures = _gestures.Select(CloneGesture).ToList(),
-            Preferences = ClonePreferences(_preferences),
+            Gestures = gestures.Select(CloneGesture).ToList(),
+            Preferences = ClonePreferences(preferences),
         };
         var json = JsonSerializer.SerializeToUtf8Bytes(payload, _jsonOptions);
 
         // 写到临时文件再原子重命名,避免半写状态。
-        var tmp = _configPath + ".tmp";
-        File.WriteAllBytes(tmp, json);
-        File.Move(tmp, _configPath, overwrite: true);
+        var tmp = _configPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        var backup = _configPath + ".replace.bak";
+        try
+        {
+            File.WriteAllBytes(tmp, json);
+            if (File.Exists(_configPath))
+            {
+                TryDelete(backup);
+                File.Replace(tmp, _configPath, backup, ignoreMetadataErrors: true);
+                TryDelete(backup);
+            }
+            else
+            {
+                File.Move(tmp, _configPath);
+            }
+        }
+        catch
+        {
+            TryDelete(tmp);
+            throw;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // best effort cleanup only
+        }
     }
 
     private sealed class Payload

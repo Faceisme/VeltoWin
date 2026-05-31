@@ -40,6 +40,7 @@ public sealed class GestureRecognizer
     // cardinal directions, while still rejecting obvious diagonal strokes.
     private const double MinimumSimpleAxisDominance = 2.40;
 
+    private readonly object _cacheLock = new();
     private ulong _cachedVersion;
     private List<TemplateEntry> _cachedTemplates = new();
 
@@ -372,36 +373,39 @@ public sealed class GestureRecognizer
 
     private List<TemplateEntry> NormalizedTemplates(IReadOnlyList<GestureCommand> commands, ulong version)
     {
-        if (_cachedVersion == version && _cachedTemplates.Count > 0)
+        lock (_cacheLock)
         {
-            return _cachedTemplates;
-        }
-
-        var list = new List<TemplateEntry>();
-        foreach (var command in commands)
-        {
-            foreach (var template in command.Templates)
+            if (_cachedVersion == version)
             {
-                if (template.Count < 2) continue;
-                var pts = new Point[template.Count];
-                for (int i = 0; i < template.Count; i++)
+                return _cachedTemplates;
+            }
+
+            var list = new List<TemplateEntry>();
+            foreach (var command in commands)
+            {
+                foreach (var template in command.Templates)
                 {
-                    pts[i] = new Point(template[i].X, template[i].Y);
-                }
-                var normalized = BuildNormalizedStroke(pts);
-                if (normalized is not null)
-                {
-                    var simpleDirection = TrySimpleDirection(pts, out var templateSimpleDirection)
-                        ? templateSimpleDirection
-                        : (SimpleDirection?)null;
-                    list.Add(new TemplateEntry(command, normalized.Vector, normalized.Directions, simpleDirection));
+                    if (template.Count < 2) continue;
+                    var pts = new Point[template.Count];
+                    for (int i = 0; i < template.Count; i++)
+                    {
+                        pts[i] = new Point(template[i].X, template[i].Y);
+                    }
+                    var normalized = BuildNormalizedStroke(pts);
+                    if (normalized is not null)
+                    {
+                        var simpleDirection = TrySimpleDirection(pts, out var templateSimpleDirection)
+                            ? templateSimpleDirection
+                            : (SimpleDirection?)null;
+                        list.Add(new TemplateEntry(command, normalized.Vector, normalized.Directions, simpleDirection));
+                    }
                 }
             }
-        }
 
-        _cachedVersion = version;
-        _cachedTemplates = list;
-        return list;
+            _cachedVersion = version;
+            _cachedTemplates = list;
+            return list;
+        }
     }
 
     // ───────────────────────── 曲线向量构建 ($1) ─────────────────────────

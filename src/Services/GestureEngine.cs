@@ -84,8 +84,9 @@ public sealed class GestureEngine : IDisposable
         _store = store;
         _overlayFactory = overlayFactory;
         _uiDispatcher = uiDispatcher;
-        _prefsSnapshot = store.Preferences;
-        _gestureSnapshot = new GestureSnapshot(store.Gestures, store.GesturesVersion);
+        var snapshot = store.ReadSnapshot();
+        _prefsSnapshot = snapshot.Preferences;
+        _gestureSnapshot = new GestureSnapshot(snapshot.Gestures, snapshot.GesturesVersion);
 
         _gestureTimeoutTimer = new System.Threading.Timer(OnGestureTimeoutFired, null, Timeout.Infinite, Timeout.Infinite);
         _safetyTimer = new System.Threading.Timer(OnSafetyTimerFired, null, Timeout.Infinite, Timeout.Infinite);
@@ -94,8 +95,9 @@ public sealed class GestureEngine : IDisposable
         store.Changed += _ =>
         {
             // 无锁更新:原子换引用即可。hook 线程读时不必加锁,也就不会和这里竞争。
-            _prefsSnapshot = store.Preferences;
-            _gestureSnapshot = new GestureSnapshot(store.Gestures, store.GesturesVersion);
+            var snapshot = store.ReadSnapshot();
+            _prefsSnapshot = snapshot.Preferences;
+            _gestureSnapshot = new GestureSnapshot(snapshot.Gestures, snapshot.GesturesVersion);
         };
     }
 

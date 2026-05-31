@@ -1,6 +1,7 @@
 using Velto.Models;
 using Velto.Win32;
 using System.Text;
+using System.Runtime.InteropServices;
 
 namespace Velto.Services;
 
@@ -66,13 +67,27 @@ public static class WindowTargeter
             if (foregroundThread != ourThread && foregroundThread != 0)
             {
                 attachedToForeground = NativeMethods.AttachThreadInput(ourThread, foregroundThread, true);
+                if (!attachedToForeground)
+                {
+                    GestureDiagnosticLogger.Info(
+                        $"attach_foreground_failed target={FormatHwnd(target.Hwnd)} foreground={FormatHwnd(foregroundHwnd)} error={Marshal.GetLastWin32Error()}");
+                }
             }
             if (targetThread != ourThread && targetThread != foregroundThread && targetThread != 0)
             {
                 attachedToTarget = NativeMethods.AttachThreadInput(ourThread, targetThread, true);
+                if (!attachedToTarget)
+                {
+                    GestureDiagnosticLogger.Info(
+                        $"attach_target_failed target={FormatHwnd(target.Hwnd)} error={Marshal.GetLastWin32Error()}");
+                }
             }
 
-            NativeMethods.SetForegroundWindow(target.Hwnd);
+            if (!NativeMethods.SetForegroundWindow(target.Hwnd))
+            {
+                GestureDiagnosticLogger.Info(
+                    $"set_foreground_failed target={FormatHwnd(target.Hwnd)} error={Marshal.GetLastWin32Error()}");
+            }
         }
         finally
         {

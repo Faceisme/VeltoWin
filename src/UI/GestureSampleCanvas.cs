@@ -20,6 +20,7 @@ public sealed class GestureSampleCanvas : Border
     private readonly Polyline _live;
     private bool _drawing;
     private List<Point> _currentPoints = new();
+    private IReadOnlyList<IReadOnlyList<StrokePoint>>? _templates;
 
     public event Action<List<StrokePoint>>? SampleRecorded;
 
@@ -50,10 +51,17 @@ public sealed class GestureSampleCanvas : Border
         MouseRightButtonUp += OnUp;
         MouseMove += OnMove;
         MouseLeave += (_, _) => { if (_drawing) Finish(); };
+        SizeChanged += (_, _) => RedrawTemplates();
     }
 
     /// <summary>清空显示。已存的样本通过 <see cref="ShowTemplates"/> 重画。</summary>
     public void Clear()
+    {
+        _templates = null;
+        ClearVisuals();
+    }
+
+    private void ClearVisuals()
     {
         _live.Points.Clear();
         // 移除所有静态样本(用 Tag 区分)
@@ -69,21 +77,27 @@ public sealed class GestureSampleCanvas : Border
     /// <summary>把多个样本叠加显示成淡色 polyline。</summary>
     public void ShowTemplates(IReadOnlyList<IReadOnlyList<StrokePoint>> templates)
     {
-        Clear();
-        if (ActualWidth <= 1 || ActualHeight <= 1)
-        {
-            // Layout 还没完成,等一会儿再画
-            Loaded += DeferredDraw;
-            return;
+        _templates = templates
+            .Select(template => template.Select(p => new StrokePoint(p.X, p.Y)).ToList())
+            .ToList();
+        RedrawTemplates();
+    }
 
-            void DeferredDraw(object? s, RoutedEventArgs e)
-            {
-                Loaded -= DeferredDraw;
-                ShowTemplates(templates);
-            }
+    private void RedrawTemplates()
+    {
+        ClearVisuals();
+        if (_templates is null)
+        {
+            return;
         }
 
-        foreach (var tpl in templates)
+        if (ActualWidth <= 1 || ActualHeight <= 1)
+        {
+            // SizeChanged will redraw once layout has a usable size.
+            return;
+        }
+
+        foreach (var tpl in _templates)
         {
             if (tpl.Count < 2) continue;
             var fit = FitToCanvas(tpl);

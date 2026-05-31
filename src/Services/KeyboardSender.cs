@@ -1,5 +1,6 @@
 using Velto.Models;
 using Velto.Win32;
+using System.Runtime.InteropServices;
 
 namespace Velto.Services;
 
@@ -93,7 +94,12 @@ public static class KeyboardSender
         }
 
         var lParam = (IntPtr)(appCommand << 16);
-        return NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APPCOMMAND, hwnd, lParam);
+        var posted = NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APPCOMMAND, hwnd, lParam);
+        if (!posted)
+        {
+            Logger.Warn($"WM_APPCOMMAND post failed, hwnd=0x{unchecked((ulong)hwnd.ToInt64()):X}, Win32 Error={Marshal.GetLastWin32Error()}");
+        }
+        return posted;
     }
 
     public static uint SendKey(uint virtualKey, ModifierKeys modifiers)
@@ -117,7 +123,7 @@ public static class KeyboardSender
         if (modifiers.HasFlag(ModifierKeys.Control)) inputs.Add(Key(VK_CONTROL, down: false));
 
         var arr = inputs.ToArray();
-        return NativeMethods.SendInput((uint)arr.Length, arr, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
+        return SendInputs(arr, $"shortcut {FormatShortcutForLog(virtualKey, modifiers)}");
     }
 
     private static NativeMethods.INPUT Key(ushort vk, bool down)
@@ -160,7 +166,7 @@ public static class KeyboardSender
             MouseXButton(xButton, down: true),
             MouseXButton(xButton, down: false),
         };
-        NativeMethods.SendInput((uint)inputs.Length, inputs, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
+        SendInputs(inputs, $"mouse xbutton {xButton}");
     }
 
     private static NativeMethods.INPUT MouseXButton(uint xButton, bool down)
@@ -208,6 +214,19 @@ public static class KeyboardSender
                 },
             },
         };
-        NativeMethods.SendInput((uint)inputs.Length, inputs, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
+        SendInputs(inputs, "right click replay");
     }
+
+    private static uint SendInputs(NativeMethods.INPUT[] inputs, string context)
+    {
+        var sent = NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
+        if (sent != inputs.Length)
+        {
+            Logger.Warn($"SendInput({context}) sent {sent}/{inputs.Length}, Win32 Error={Marshal.GetLastWin32Error()}");
+        }
+        return sent;
+    }
+
+    private static string FormatShortcutForLog(uint virtualKey, ModifierKeys modifiers)
+        => $"{modifiers}+VK{virtualKey:X2}";
 }

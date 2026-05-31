@@ -13,12 +13,33 @@ namespace Velto.Services;
 /// </summary>
 public static class GestureGate
 {
-    private static volatile bool _suspended;
+    private static int _suspendCount;
 
     /// <summary>true = 暂停手势识别,所有鼠标事件放行给系统/WPF。</summary>
-    public static bool Suspended
+    public static bool Suspended => System.Threading.Volatile.Read(ref _suspendCount) > 0;
+
+    public static IDisposable Suspend()
     {
-        get => _suspended;
-        set => _suspended = value;
+        System.Threading.Interlocked.Increment(ref _suspendCount);
+        return new Suspension();
+    }
+
+    private sealed class Suspension : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (System.Threading.Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            var count = System.Threading.Interlocked.Decrement(ref _suspendCount);
+            if (count < 0)
+            {
+                System.Threading.Interlocked.Exchange(ref _suspendCount, 0);
+            }
+        }
     }
 }
