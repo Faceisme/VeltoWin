@@ -22,14 +22,16 @@ public sealed class AppPreferences
     public bool ShowTrayIcon { get; set; } = true;
 
     /// <summary>
-    /// 识别阈值 = 可接受的最大平均逐点曲线距离。值越小越严格。
-    /// 曲线匹配($1)的尺度:同手势样本间约 0.01–0.14,不同手势间通常 ≥0.09,故默认 0.18。
-    /// (注意:这与旧"方向序列编辑距离"的阈值不是一个量级,旧配置会在加载时迁移。)
+    /// 识别阈值 = 可接受的最大签名差异度。值越小越严格。
+    /// 签名匹配的距离约为 0..1:方向/弧向完全一致为 0,默认 0.34 与 macOS 版一致。
     /// </summary>
-    public double RecognitionThreshold { get; set; } = 0.18;
+    public double RecognitionThreshold { get; set; } = 0.34;
 
-    /// <summary>手势超时秒数。绘制中停下不动超过该时间 → 取消当前手势(松开不触发)。默认 0.5s。</summary>
-    public double GestureTimeoutSeconds { get; set; } = 0.5;
+    /// <summary>手势超时秒数。绘制中停下不动超过该时间 → 取消当前手势(松开不触发)。默认 3s。</summary>
+    public double GestureTimeoutSeconds { get; set; } = 3.0;
+
+    /// <summary>启用后,来回乱画或转圈会立即取消当前手势。</summary>
+    public bool ScribbleCancelEnabled { get; set; } = true;
 
     public GestureTargetPolicy GestureTargetPolicy { get; set; } = GestureTargetPolicy.WindowUnderPointer;
 

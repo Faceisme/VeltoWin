@@ -47,7 +47,8 @@ src/
   Models/                       数据模型(Shortcut / GestureCommand / AppPreferences)
   Services/
     ConfigStore.cs             配置 JSON 持久化 (%APPDATA%\Velto\config.json)
-    GestureRecognizer.cs       识别算法 — $1 风格重采样 + 平均距离匹配
+    GestureDirection.cs        方向签名算法 — 拐角分段 + 弧向度量
+    GestureRecognizer.cs       识别算法 — 命令级 canonical 签名 + 最近邻匹配
     MouseHook.cs               全局低层鼠标钩子 (WH_MOUSE_LL)
     KeyboardSender.cs          快捷键合成 (SendInput)
     WindowTargeter.cs          目标窗口定位 (光标下 vs 活动)
@@ -70,4 +71,4 @@ Windows 不像 macOS 需要单独授权辅助功能,低层鼠标钩子只需:
 ## 注意
 
 - 全局右键钩子在手势进行中会暂时吞掉右键事件,普通右键单击通过 SendInput 重新合成,以确保系统右键菜单仍能弹出。
-- 手势识别完全沿用 macOS 版的算法(GestureRecognizer.swift),识别结果应当一致。
+- 手势识别沿用 macOS 版的方向签名方案(GestureDirection.swift / GestureRecognizer.swift),识别结果应当一致。

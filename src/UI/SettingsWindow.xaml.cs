@@ -145,6 +145,7 @@ public partial class SettingsWindow : Window
         TrailCheck.IsOn = _draftPreferences.ShowTrail;
         TrayIconCheck.IsOn = _draftPreferences.ShowTrayIcon;
         AutoStartCheck.IsOn = _draftAutoStart;
+        ScribbleCancelCheck.IsOn = _draftPreferences.ScribbleCancelEnabled;
         ThresholdSlider.Value = _draftPreferences.RecognitionThreshold;
         ThresholdLabel.Text = _draftPreferences.RecognitionThreshold.ToString("0.00");
         TimeoutSlider.Value = _draftPreferences.GestureTimeoutSeconds;
@@ -285,6 +286,7 @@ public partial class SettingsWindow : Window
         if (_suppressEvents) return;
         _draftPreferences.GesturesEnabled = EnabledCheck.IsOn;
         _draftPreferences.ShowTrail = TrailCheck.IsOn;
+        _draftPreferences.ScribbleCancelEnabled = ScribbleCancelCheck.IsOn;
         MarkDirty();
     }
 
@@ -467,6 +469,7 @@ public partial class SettingsWindow : Window
         ShowTrayIcon = source.ShowTrayIcon,
         RecognitionThreshold = source.RecognitionThreshold,
         GestureTimeoutSeconds = source.GestureTimeoutSeconds,
+        ScribbleCancelEnabled = source.ScribbleCancelEnabled,
         GestureTargetPolicy = source.GestureTargetPolicy,
     };
 

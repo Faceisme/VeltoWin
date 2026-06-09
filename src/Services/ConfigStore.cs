@@ -178,6 +178,7 @@ public sealed class ConfigStore
         var gestures = backup.Gestures.Select(CloneGesture).ToList();
         var preferences = ClonePreferences(backup.Preferences);
         MigrateRecognitionThreshold(preferences);
+        MigrateGestureTimeout(preferences);
         return (gestures, preferences);
     }
 
@@ -210,6 +211,7 @@ public sealed class ConfigStore
             var gestures = payload.Gestures.Select(CloneGesture).ToList();
             var prefs = payload.Preferences ?? AppPreferences.Default;
             MigrateRecognitionThreshold(prefs);
+            MigrateGestureTimeout(prefs);
             return (gestures, prefs);
         }
         catch
@@ -221,15 +223,16 @@ public sealed class ConfigStore
     }
 
     /// <summary>
-    /// 识别算法从"方向序列编辑距离"换成"曲线匹配"后,阈值量级变了。
-    /// 旧配置里的阈值(典型 0.34 / 0.50,在新尺度下过于宽松会乱触发)落在新滑条范围
-    /// [0.05, 0.40] 之外时,重置为新默认值。范围内的值视为用户在新尺度下已自行调过,保留。
+    /// 识别算法从 "$1 曲线距离" 换成 "方向签名差异度" 后,默认值从 0.18 迁移到 0.34。
+    /// 已经在新滑条范围 [0.05, 0.40] 内、且不是旧默认值的用户调节保留。
     /// </summary>
     private static void MigrateRecognitionThreshold(AppPreferences prefs)
     {
         const double newMin = 0.05, newMax = 0.40;
-        const double oldDefault = 0.22;
-        if (Math.Abs(prefs.RecognitionThreshold - oldDefault) < 0.0001)
+        const double oldShapeDefault = 0.18;
+        const double oldDirectionDefault = 0.22;
+        if (Math.Abs(prefs.RecognitionThreshold - oldShapeDefault) < 0.0001 ||
+            Math.Abs(prefs.RecognitionThreshold - oldDirectionDefault) < 0.0001)
         {
             prefs.RecognitionThreshold = AppPreferences.Default.RecognitionThreshold;
             return;
@@ -239,6 +242,16 @@ public sealed class ConfigStore
         {
             Logger.Info($"识别阈值 {prefs.RecognitionThreshold:0.00} 超出新尺度范围,迁移为默认 {AppPreferences.Default.RecognitionThreshold:0.00}");
             prefs.RecognitionThreshold = AppPreferences.Default.RecognitionThreshold;
+        }
+    }
+
+    private static void MigrateGestureTimeout(AppPreferences prefs)
+    {
+        if (prefs.GestureTimeoutSeconds < 1.0)
+        {
+            Logger.Info(
+                $"手势超时 {prefs.GestureTimeoutSeconds:0.0}s 低于新版推荐范围,迁移为默认 {AppPreferences.Default.GestureTimeoutSeconds:0.0}s");
+            prefs.GestureTimeoutSeconds = AppPreferences.Default.GestureTimeoutSeconds;
         }
     }
 
@@ -419,6 +432,7 @@ public sealed class ConfigStore
         ShowTrayIcon = source.ShowTrayIcon,
         RecognitionThreshold = source.RecognitionThreshold,
         GestureTimeoutSeconds = source.GestureTimeoutSeconds,
+        ScribbleCancelEnabled = source.ScribbleCancelEnabled,
         GestureTargetPolicy = source.GestureTargetPolicy,
     };
 

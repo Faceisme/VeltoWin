@@ -238,6 +238,7 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="200"/>
@@ -259,8 +260,13 @@
                                 <TextBlock Grid.Row="1" Grid.Column="2" x:Name="TimeoutLabel" VerticalAlignment="Center"
                                            TextAlignment="Right" Margin="0,14,0,0" Style="{StaticResource MutedText}"/>
 
-                                <TextBlock Grid.Row="2" Grid.Column="0" Text="作用目标" VerticalAlignment="Center" Margin="0,16,0,0"/>
-                                <ComboBox x:Name="TargetCombo" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2"
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="乱画取消" VerticalAlignment="Center" Margin="0,16,0,0"/>
+                                <ui:ToggleSwitch x:Name="ScribbleCancelCheck" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2"
+                                                 HorizontalAlignment="Left" Margin="12,16,0,0"
+                                                 OnContent="" OffContent="" Toggled="OnPrefsChanged"/>
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="作用目标" VerticalAlignment="Center" Margin="0,16,0,0"/>
+                                <ComboBox x:Name="TargetCombo" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2"
                                           Margin="12,16,0,0" HorizontalAlignment="Left" Width="220"
                                           SelectionChanged="OnTargetChanged">
                                     <ComboBoxItem Content="光标下的窗口"/>
