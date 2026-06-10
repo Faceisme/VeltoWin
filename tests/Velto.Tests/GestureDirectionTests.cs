@@ -73,6 +73,50 @@ public sealed class GestureDirectionTests
         Assert.AreEqual(0, distance, 0.001);
     }
 
+    [TestMethod]
+    public void FromPoints_DropsShortHookAtReversalTurn()
+    {
+        // 模拟"刷新"画法:向左 → 折返处带一个向下的小钩 → 向右。
+        // 小钩不该成为独立方向段,否则 [L,D,R] 对 [L,R] 距离 0.33 超阈值。
+        var points = new List<Point>();
+        for (var x = 300.0; x >= 150; x -= 5) points.Add(new Point(x, 200));
+        for (var y = 200.0; y <= 225; y += 5) points.Add(new Point(150, y));
+        for (var x = 150.0; x <= 310; x += 5) points.Add(new Point(x, 225));
+
+        var signature = GestureDirection.FromPoints(points);
+
+        CollectionAssert.AreEqual(new[] { 4, 0 }, signature.Sequence,
+            $"Expected L,R but got [{GestureDirection.Arrows(signature.Sequence)}]");
+    }
+
+    [TestMethod]
+    public void Distance_TreatsAdjacentBucketSubstitutionAsHalfError()
+    {
+        // "置顶"场景:上挑段在 U/UR 桶边界摇摆,模板是 [D,UR],实画 [D,U]。
+        var drawn = new GestureDirection.Signature(new[] { 2, 6 }, 0);
+        var template = new GestureDirection.Signature(new[] { 2, 7 }, 0);
+
+        var distance = GestureDirection.Distance(drawn, template);
+
+        Assert.AreEqual(0.25, distance, 0.001);
+    }
+
+    [TestMethod]
+    public void Distance_PrefersExactBucketOverAdjacentBucketWhenBowMatches()
+    {
+        // 画一条带轻微弓形的竖直上划:精确同桶的直线命令要赢过相邻桶的曲线命令,
+        // 不能打成 0:0 平局被歧义保护拒绝。
+        var drawn = new GestureDirection.Signature(new[] { 6 }, 0.04);
+        var straightUp = new GestureDirection.Signature(new[] { 6 }, 0.04);
+        var curvedUpRight = new GestureDirection.Signature(new[] { 7 }, 0.04);
+
+        var exact = GestureDirection.Distance(drawn, straightUp);
+        var adjacent = GestureDirection.Distance(drawn, curvedUpRight);
+
+        Assert.AreEqual(0, exact, 0.001);
+        Assert.IsTrue(adjacent >= 0.05, $"Adjacent bucket should cost a margin, got {adjacent:0.000}");
+    }
+
     private static Point[] Stroke(params (double X, double Y)[] points)
         => points.Select(p => new Point(p.X, p.Y)).ToArray();
 }

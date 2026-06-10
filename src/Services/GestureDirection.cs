@@ -19,10 +19,13 @@ public static class GestureDirection
     private const double MinimumPathLength = 24;
     private const int CornerWindow = 6;
     private const double CornerAngleThreshold = 55 * Math.PI / 180;
+    private const double MinimumSegmentFraction = 0.12;
+    private const double AdjacentBucketCost = 0.1;
+    private const double AdjacentSubstitutionCost = 0.5;
     private const double BowSignThreshold = 0.025;
     private const double BowStrongThreshold = 0.06;
     private const double BowOppositePenalty = 0.6;
-    private const double BowStraightPenalty = 0.4;
+    private const double BowStraightPenalty = 0.3;
 
     private static readonly string[] Glyphs = { "R", "DR", "D", "DL", "L", "UL", "U", "UR" };
 
@@ -93,7 +96,9 @@ public static class GestureDirection
             lhs.BowSign == rhs.BowSign &&
             CircularBucketDistance(lhs.Sequence[0], rhs.Sequence[0]) <= 1)
         {
-            sequenceDistance = 0;
+            // 弓向一致时容忍相邻方向桶,但留一点代价,
+            // 否则会和精确同桶的候选打成 0:0 平局,被歧义保护一起拒绝。
+            sequenceDistance = lhs.Sequence[0] == rhs.Sequence[0] ? 0 : AdjacentBucketCost;
         }
         else
         {
@@ -105,8 +110,9 @@ public static class GestureDirection
             : sequenceDistance;
     }
 
+    // 用 · 分隔,否则日志里 "D·UR"(两段)和 "D·U·R"(三段)无法区分
     public static string Arrows(IReadOnlyList<int> sequence)
-        => string.Join("", sequence.Select(static d => d >= 0 && d < Glyphs.Length ? Glyphs[d] : "?"));
+        => string.Join("·", sequence.Select(static d => d >= 0 && d < Glyphs.Length ? Glyphs[d] : "?"));
 
     public static string DisplayString(Signature signature)
         => Arrows(signature.Sequence) + (signature.Sequence.Length == 1 ? BowGlyph(signature.BowSign) : "");
@@ -181,15 +187,41 @@ public static class GestureDirection
         bounds.AddRange(corners);
         bounds.Add(n - 1);
 
+        var spanLengths = new double[bounds.Count - 1];
+        var totalLength = 0.0;
+        for (var i = 0; i < bounds.Count - 1; i++)
+        {
+            var length = 0.0;
+            for (var j = bounds[i] + 1; j <= bounds[i + 1]; j++)
+            {
+                length += Distance(points[j - 1], points[j]);
+            }
+            spanLengths[i] = length;
+            totalLength += length;
+        }
+
         var sequence = new List<int>();
         for (var i = 0; i < bounds.Count - 1; i++)
         {
+            // 折返处/起笔收笔的小钩子不构成方向段,丢掉以免污染序列
+            if (spanLengths[i] < MinimumSegmentFraction * totalLength)
+            {
+                continue;
+            }
+
             var direction = NetDirection(points, bounds[i], bounds[i + 1]);
             if (direction is null || (sequence.Count > 0 && sequence[^1] == direction.Value))
             {
                 continue;
             }
             sequence.Add(direction.Value);
+        }
+
+        if (sequence.Count == 0)
+        {
+            return NetDirection(points, 0, n - 1) is { } overall
+                ? new[] { overall }
+                : Array.Empty<int>();
         }
 
         return sequence.ToArray();
@@ -267,19 +299,24 @@ public static class GestureDirection
         {
             return 1;
         }
-        return (double)Levenshtein(lhs, rhs) / Math.Max(lhs.Count, rhs.Count);
+        return Levenshtein(lhs, rhs) / Math.Max(lhs.Count, rhs.Count);
     }
 
-    private static int Levenshtein(IReadOnlyList<int> lhs, IReadOnlyList<int> rhs)
+    private static double Levenshtein(IReadOnlyList<int> lhs, IReadOnlyList<int> rhs)
     {
-        var previous = Enumerable.Range(0, rhs.Count + 1).ToArray();
-        var current = new int[rhs.Count + 1];
+        var previous = new double[rhs.Count + 1];
+        var current = new double[rhs.Count + 1];
+        for (var j = 0; j <= rhs.Count; j++)
+        {
+            previous[j] = j;
+        }
+
         for (var i = 1; i <= lhs.Count; i++)
         {
             current[0] = i;
             for (var j = 1; j <= rhs.Count; j++)
             {
-                var cost = lhs[i - 1] == rhs[j - 1] ? 0 : 1;
+                var cost = SubstitutionCost(lhs[i - 1], rhs[j - 1]);
                 current[j] = Math.Min(
                     Math.Min(previous[j] + 1, current[j - 1] + 1),
                     previous[j - 1] + cost);
@@ -289,6 +326,14 @@ public static class GestureDirection
         }
         return previous[rhs.Count];
     }
+
+    /// <summary>相邻方向桶(45°)只算半个错 —— 接近桶边界的斜线在两次绘制间会左右摇摆。</summary>
+    private static double SubstitutionCost(int lhs, int rhs) => CircularBucketDistance(lhs, rhs) switch
+    {
+        0 => 0,
+        1 => AdjacentSubstitutionCost,
+        _ => 1,
+    };
 
     private static Point[] Resample(IReadOnlyList<Point> points, int targetCount, double knownPathLength)
     {

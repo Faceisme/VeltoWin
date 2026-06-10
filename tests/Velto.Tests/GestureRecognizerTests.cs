@@ -45,6 +45,39 @@ public sealed class GestureRecognizerTests
         Assert.AreEqual(downBow.Id, match.Command.Id);
     }
 
+    [TestMethod]
+    public void BestMatch_MatchesReversalGestureWithHookAtTurn()
+    {
+        // "刷新"回归:模板是干净的 L→R 折线,实画折返处带向下小钩。
+        var template = new List<Point>();
+        for (var x = 300.0; x >= 150; x -= 5) template.Add(new Point(x, 200));
+        for (var x = 150.0; x <= 310; x += 5) template.Add(new Point(x, 200));
+        var command = Command("刷新", template);
+
+        var drawn = new List<Point>();
+        for (var x = 300.0; x >= 150; x -= 5) drawn.Add(new Point(x, 200));
+        for (var y = 200.0; y <= 225; y += 5) drawn.Add(new Point(150, y));
+        for (var x = 150.0; x <= 310; x += 5) drawn.Add(new Point(x, 225));
+
+        var match = new GestureRecognizer().BestMatch(drawn, new[] { command }, version: 1, threshold: 0.30);
+
+        Assert.IsNotNull(match);
+        Assert.AreEqual(command.Id, match.Command.Id);
+    }
+
+    [TestMethod]
+    public void BestMatch_MatchesTwoSegmentGestureWhenSecondLegWobblesAcrossBucketBoundary()
+    {
+        // "置顶"回归:模板上挑段偏 UR,实画是竖直的 U,相邻桶只算半个错。
+        var command = Command("置顶", Stroke((100, 100), (100, 260), (160, 110)));
+        var drawn = Stroke((200, 100), (202, 258), (198, 105));
+
+        var match = new GestureRecognizer().BestMatch(drawn, new[] { command }, version: 1, threshold: 0.30);
+
+        Assert.IsNotNull(match);
+        Assert.AreEqual(command.Id, match.Command.Id);
+    }
+
     private static GestureCommand Command(string name, IReadOnlyList<Point> template) => new()
     {
         Name = name,
