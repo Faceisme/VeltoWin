@@ -19,6 +19,12 @@ public sealed class ConfigStore
 {
     public static ConfigStore Shared { get; } = new();
 
+    /// <summary>
+    /// config.json 的格式版本。0(字段缺失)= 旧版($1 / 方向算法时代),加载时做一次性偏好迁移;
+    /// 2 = 方向签名时代,迁移已完成,不再重跑。与 <see cref="BackupFile.CurrentFormatVersion"/> 同步。
+    /// </summary>
+    private const int ConfigFormatVersion = 2;
+
     private const int StoredTemplatePointCount = 64;
     private const int StoredCoordinateDigits = 1;
 
@@ -93,10 +99,18 @@ public sealed class ConfigStore
             Converters = { new JsonStringEnumConverter() },
         };
 
-        var (gestures, prefs) = Load();
+        var (gestures, prefs, legacyUpgraded) = Load();
         _gestures = gestures;
         _preferences = prefs;
         _gesturesVersion = 1;
+
+        if (legacyUpgraded)
+        {
+            // 旧版(无 formatVersion)配置完成一次性迁移后立刻落盘盖上新版本号,
+            // 此后的启动不再重跑迁移 —— 用户在新版里设置的任何合法值都不会被误当旧默认值重置。
+            try { Save(_gestures, _preferences); }
+            catch (Exception ex) { Logger.Error(ex, "ConfigStore 迁移落盘"); }
+        }
     }
 
     public Snapshot ReadSnapshot()
@@ -177,8 +191,11 @@ public sealed class ConfigStore
 
         var gestures = backup.Gestures.Select(CloneGesture).ToList();
         var preferences = ClonePreferences(backup.Preferences);
-        MigrateRecognitionThreshold(preferences);
-        MigrateGestureTimeout(preferences);
+        if (backup.FormatVersion < BackupFile.CurrentFormatVersion)
+        {
+            PreferenceMigration.MigrateLegacy(preferences);
+        }
+        PreferenceMigration.Validate(preferences);
         return (gestures, preferences);
     }
 
@@ -192,11 +209,11 @@ public sealed class ConfigStore
         Changed?.Invoke(ChangeReason.BackupImport);
     }
 
-    private (List<GestureCommand>, AppPreferences) Load()
+    private (List<GestureCommand>, AppPreferences, bool LegacyUpgraded) Load()
     {
         if (!File.Exists(_configPath))
         {
-            return (DefaultGestures(), AppPreferences.Default);
+            return (DefaultGestures(), AppPreferences.Default, false);
         }
 
         try
@@ -205,53 +222,24 @@ public sealed class ConfigStore
             var payload = JsonSerializer.Deserialize<Payload>(json, _jsonOptions);
             if (payload is null)
             {
-                return (DefaultGestures(), AppPreferences.Default);
+                return (DefaultGestures(), AppPreferences.Default, false);
             }
 
             var gestures = payload.Gestures.Select(CloneGesture).ToList();
             var prefs = payload.Preferences ?? AppPreferences.Default;
-            MigrateRecognitionThreshold(prefs);
-            MigrateGestureTimeout(prefs);
-            return (gestures, prefs);
+            var legacy = payload.FormatVersion < ConfigFormatVersion;
+            if (legacy)
+            {
+                PreferenceMigration.MigrateLegacy(prefs);
+            }
+            PreferenceMigration.Validate(prefs);
+            return (gestures, prefs, legacy);
         }
         catch
         {
             // 损坏的配置不应该让 App 起不来 —— 退回默认,旧文件留个 .bak 方便调查
             try { File.Move(_configPath, _configPath + ".bak", overwrite: true); } catch { /* swallow */ }
-            return (DefaultGestures(), AppPreferences.Default);
-        }
-    }
-
-    /// <summary>
-    /// 识别算法从 "$1 曲线距离" 换成 "方向签名差异度" 后,默认值从 0.18 迁移到 0.34。
-    /// 已经在新滑条范围 [0.05, 0.40] 内、且不是旧默认值的用户调节保留。
-    /// </summary>
-    private static void MigrateRecognitionThreshold(AppPreferences prefs)
-    {
-        const double newMin = 0.05, newMax = 0.40;
-        const double oldShapeDefault = 0.18;
-        const double oldDirectionDefault = 0.22;
-        if (Math.Abs(prefs.RecognitionThreshold - oldShapeDefault) < 0.0001 ||
-            Math.Abs(prefs.RecognitionThreshold - oldDirectionDefault) < 0.0001)
-        {
-            prefs.RecognitionThreshold = AppPreferences.Default.RecognitionThreshold;
-            return;
-        }
-
-        if (prefs.RecognitionThreshold < newMin || prefs.RecognitionThreshold > newMax)
-        {
-            Logger.Info($"识别阈值 {prefs.RecognitionThreshold:0.00} 超出新尺度范围,迁移为默认 {AppPreferences.Default.RecognitionThreshold:0.00}");
-            prefs.RecognitionThreshold = AppPreferences.Default.RecognitionThreshold;
-        }
-    }
-
-    private static void MigrateGestureTimeout(AppPreferences prefs)
-    {
-        if (prefs.GestureTimeoutSeconds < 1.0)
-        {
-            Logger.Info(
-                $"手势超时 {prefs.GestureTimeoutSeconds:0.0}s 低于新版推荐范围,迁移为默认 {AppPreferences.Default.GestureTimeoutSeconds:0.0}s");
-            prefs.GestureTimeoutSeconds = AppPreferences.Default.GestureTimeoutSeconds;
+            return (DefaultGestures(), AppPreferences.Default, false);
         }
     }
 
@@ -277,6 +265,7 @@ public sealed class ConfigStore
     {
         var payload = new Payload
         {
+            FormatVersion = ConfigFormatVersion,
             Gestures = gestures.Select(CloneGesture).ToList(),
             Preferences = ClonePreferences(preferences),
         };
@@ -323,6 +312,8 @@ public sealed class ConfigStore
 
     private sealed class Payload
     {
+        /// <summary>旧版配置文件没有该字段 → 反序列化为 0,触发一次性迁移。</summary>
+        public int FormatVersion { get; set; }
         public List<GestureCommand> Gestures { get; set; } = new();
         public AppPreferences? Preferences { get; set; }
     }

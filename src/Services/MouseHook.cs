@@ -13,8 +13,12 @@ public sealed class MouseHook : IDisposable
 
     private long _lastErrorLogTicks;
     private bool _rightButtonTracking;
+    private long _lastCallbackTick = Environment.TickCount64;
 
     public Func<MouseEvent, bool>? OnEvent { get; set; }
+
+    /// <summary>最近一次钩子回调的 TickCount64 —— <see cref="HookThread"/> 的看门狗用它判断钩子是否被系统静默卸载。</summary>
+    public long LastCallbackTick => Volatile.Read(ref _lastCallbackTick);
 
     public void Install()
     {
@@ -42,6 +46,14 @@ public sealed class MouseHook : IDisposable
         _rightButtonTracking = false;
     }
 
+    /// <summary>看门狗判定钩子已死时重装。必须在安装钩子的线程(HookThread)上调用。</summary>
+    public void Reinstall()
+    {
+        Uninstall();
+        Volatile.Write(ref _lastCallbackTick, Environment.TickCount64); // 重置心跳,避免看门狗下个周期立刻再触发
+        Install();
+    }
+
     public void Dispose() => Uninstall();
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -49,6 +61,8 @@ public sealed class MouseHook : IDisposable
         var kind = MouseEventKind.Other;
         try
         {
+            // 看门狗心跳:回调被调到 = 钩子还活着(无论消息类型)。
+            Volatile.Write(ref _lastCallbackTick, Environment.TickCount64);
             if (nCode < 0)
             {
                 return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);

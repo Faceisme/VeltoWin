@@ -24,8 +24,10 @@ public sealed class GestureRecognizer
     private sealed record CommandSignature(GestureCommand Command, GestureDirection.Signature Signature);
 
     public Match? BestCandidate(IReadOnlyList<Point> points, IReadOnlyList<GestureCommand> commands, ulong version)
+        => BestCandidate(GestureDirection.FromPoints(points), commands, version);
+
+    public Match? BestCandidate(GestureDirection.Signature candidate, IReadOnlyList<GestureCommand> commands, ulong version)
     {
-        var candidate = GestureDirection.FromPoints(points);
         if (candidate.IsEmpty)
         {
             return null;
@@ -57,8 +59,15 @@ public sealed class GestureRecognizer
         IReadOnlyList<GestureCommand> commands,
         ulong version,
         double threshold)
+        => BestMatch(GestureDirection.FromPoints(points), commands, version, threshold);
+
+    public Match? BestMatch(
+        GestureDirection.Signature candidate,
+        IReadOnlyList<GestureCommand> commands,
+        ulong version,
+        double threshold)
     {
-        var best = BestCandidate(points, commands, version);
+        var best = BestCandidate(candidate, commands, version);
         if (best is null || best.Distance > threshold)
         {
             return null;
@@ -73,9 +82,8 @@ public sealed class GestureRecognizer
         return best;
     }
 
-    public string DescribeSimpleDirection(IReadOnlyList<Point> points)
+    public string DescribeSimpleDirection(GestureDirection.Signature signature)
     {
-        var signature = GestureDirection.FromPoints(points);
         if (signature.Sequence.Length != 1)
         {
             return "none";
@@ -92,12 +100,11 @@ public sealed class GestureRecognizer
     }
 
     public string DescribeCandidates(
-        IReadOnlyList<Point> points,
+        GestureDirection.Signature candidate,
         IReadOnlyList<GestureCommand> commands,
         ulong version,
         int maxCount = 5)
     {
-        var candidate = GestureDirection.FromPoints(points);
         if (candidate.IsEmpty)
         {
             return "candidate=invalid";
@@ -116,12 +123,6 @@ public sealed class GestureRecognizer
             .Take(maxCount)
             .Select((row, index) =>
                 $"#{index + 1} name='{row.Command.Name}' d={row.Distance:0.000} sig={row.Signature}"));
-    }
-
-    public string DescribeSequence(IReadOnlyList<Point> points)
-    {
-        var signature = GestureDirection.FromPoints(points);
-        return signature.IsEmpty ? "(empty)" : GestureDirection.DisplayString(signature);
     }
 
     public GestureDirection.Signature CanonicalSignature(GestureCommand command)

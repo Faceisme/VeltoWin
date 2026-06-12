@@ -7,7 +7,8 @@ namespace Velto.Models;
 /// </summary>
 public sealed class BackupFile
 {
-    public const int CurrentFormatVersion = 1;
+    /// <summary>2 = 方向签名识别时代(导入时不再做旧默认值迁移);1 = 旧版($1 / 方向算法)导出。</summary>
+    public const int CurrentFormatVersion = 2;
 
     public int FormatVersion { get; set; } = CurrentFormatVersion;
     public string AppName { get; set; } = "Velto for Windows";

@@ -123,7 +123,28 @@ public static class KeyboardSender
         if (modifiers.HasFlag(ModifierKeys.Control)) inputs.Add(Key(VK_CONTROL, down: false));
 
         var arr = inputs.ToArray();
-        return SendInputs(arr, $"shortcut {FormatShortcutForLog(virtualKey, modifiers)}");
+        var sent = SendInputs(arr, $"shortcut {FormatShortcutForLog(virtualKey, modifiers)}");
+        if (sent != arr.Length && sent > 0)
+        {
+            // 部分注入失败可能留下"卡住"的键(down 进去了、对应的 up 被挡)——
+            // 症状是系统级 Ctrl/Alt 错乱。兜底:补发全部 KEYUP。
+            // 若整次调用都被挡(sent=0,典型 UIPI),没有键被按下,无需清理。
+            ReleaseKeys(virtualKey, modifiers);
+        }
+        return sent;
+    }
+
+    private static void ReleaseKeys(uint virtualKey, ModifierKeys modifiers)
+    {
+        var inputs = new List<NativeMethods.INPUT>(5)
+        {
+            Key((ushort)virtualKey, down: false),
+        };
+        if (modifiers.HasFlag(ModifierKeys.Win))     inputs.Add(Key(VK_LWIN,    down: false));
+        if (modifiers.HasFlag(ModifierKeys.Shift))   inputs.Add(Key(VK_SHIFT,   down: false));
+        if (modifiers.HasFlag(ModifierKeys.Alt))     inputs.Add(Key(VK_MENU,    down: false));
+        if (modifiers.HasFlag(ModifierKeys.Control)) inputs.Add(Key(VK_CONTROL, down: false));
+        SendInputs(inputs.ToArray(), "stuck-key cleanup");
     }
 
     private static NativeMethods.INPUT Key(ushort vk, bool down)

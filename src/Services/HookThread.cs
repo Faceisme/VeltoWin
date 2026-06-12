@@ -18,12 +18,20 @@ namespace Velto.Services;
 /// </summary>
 public sealed class HookThread : IDisposable
 {
+    // 看门狗:WH_MOUSE_LL 回调超时(LowLevelHooksTimeout)会被系统**静默**卸载,没有任何通知,
+    // 之后 Velto 看起来还在跑、手势却全失效。低频自检 + 自动重装,把"重启程序才能恢复"变成自愈。
+    private const uint HookHealthCheckMessage = NativeMethods.WM_APP + 0x100;
+    private const int WatchdogIntervalMs = 30_000;
+
     private Thread? _thread;
     private uint _threadId;
     private MouseHook? _hook;
     private Func<MouseEvent, bool>? _handler;
     private readonly ManualResetEventSlim _started = new(false);
     private Exception? _startupException;
+    private System.Threading.Timer? _watchdog;
+    private NativeMethods.POINT _watchdogCursor;
+    private bool _watchdogHasCursor;
 
     public void Start(Func<MouseEvent, bool> handler)
     {
@@ -43,11 +51,19 @@ public sealed class HookThread : IDisposable
         {
             throw new InvalidOperationException("HookThread 启动失败", _startupException);
         }
+
+        // 体检逻辑必须跑在钩子线程上(SetWindowsHookEx 与安装线程关联,重装只能在那儿做),
+        // Timer 只负责按周期投递消息唤醒消息泵。
+        _watchdog = new System.Threading.Timer(
+            _ => NativeMethods.PostThreadMessageW(_threadId, HookHealthCheckMessage, IntPtr.Zero, IntPtr.Zero),
+            null, WatchdogIntervalMs, WatchdogIntervalMs);
     }
 
     public void Stop()
     {
         if (_thread is null) return;
+        _watchdog?.Dispose();
+        _watchdog = null;
         // PostThreadMessage(WM_QUIT) 让消息泵自然退出 —— 比 Thread.Interrupt/Abort 干净。
         NativeMethods.PostThreadMessageW(_threadId, NativeMethods.WM_QUIT, IntPtr.Zero, IntPtr.Zero);
         _thread.Join(TimeSpan.FromSeconds(2));
@@ -77,11 +93,48 @@ public sealed class HookThread : IDisposable
         // WH_MOUSE_LL 的回调由 GetMessage/DispatchMessage 派发 —— 没有消息泵的话钩子根本不会回调。
         while (NativeMethods.GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
+            if (msg.hwnd == IntPtr.Zero && msg.message == HookHealthCheckMessage)
+            {
+                CheckHookHealth();
+                continue;
+            }
             NativeMethods.TranslateMessage(ref msg);
             NativeMethods.DispatchMessageW(ref msg);
         }
 
         _hook?.Uninstall();
         _hook = null;
+    }
+
+    /// <summary>
+    /// 在钩子线程上执行。判定标准:两次体检之间光标动过,但钩子回调在这整段时间里
+    /// 一次都没被调过(任何鼠标移动都会进 LL 钩子回调)→ 钩子已被系统卸载,重装。
+    /// </summary>
+    private void CheckHookHealth()
+    {
+        if (_hook is null) return;
+
+        var hasCursor = NativeMethods.GetCursorPos(out var cursor);
+        var moved = _watchdogHasCursor && hasCursor &&
+                    (cursor.X != _watchdogCursor.X || cursor.Y != _watchdogCursor.Y);
+        if (hasCursor)
+        {
+            _watchdogCursor = cursor;
+            _watchdogHasCursor = true;
+        }
+        if (!moved) return;
+
+        var silentMs = Environment.TickCount64 - _hook.LastCallbackTick;
+        if (silentMs < WatchdogIntervalMs) return;
+
+        Logger.Warn($"鼠标钩子疑似被系统静默卸载(光标已移动但 {silentMs}ms 无回调),重新安装");
+        try
+        {
+            _hook.Reinstall();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "HookThread 钩子重装");
+        }
     }
 }

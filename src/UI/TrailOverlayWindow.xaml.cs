@@ -79,6 +79,9 @@ public partial class TrailOverlayWindow : Window
             return;
         }
 
+        // 新手势必须从空轨迹开始:上一条轨迹可能因 stale 守卫跳过了 EndGesture,
+        // 残点不清掉会被 DrawTrail 的增量追加拼接出鬼影。
+        ClearTrail();
         EnsureVisible();
         SetBlocksInput(false);
         DrawTrail(points);

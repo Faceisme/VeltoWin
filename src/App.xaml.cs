@@ -62,6 +62,14 @@ public partial class App : Application
             _hookThread.Start(_engine.HandleMouseEvent);
             Logger.Info("MouseHook installed on dedicated input thread");
 
+            // 预热轨迹覆盖层:空闲时先把窗口和 HWND 建好,
+            // 首次手势显示轨迹时不必现场创建整个 WPF 窗口(可达上百毫秒)。
+            Dispatcher.InvokeAsync(() =>
+            {
+                var overlay = CreateOverlay();
+                new System.Windows.Interop.WindowInteropHelper(overlay).EnsureHandle();
+            }, DispatcherPriority.ApplicationIdle);
+
             if (EnableShellTransitionDiagnostics)
             {
                 _shellDiagnostic = new ShellTransitionDiagnostic();

@@ -59,6 +59,10 @@ public sealed class GestureEngine : IDisposable
     private long _currentGestureId;
     private long _activeOverlayGestureId;
 
+    // 轨迹合帧:1 = 已有一次在途的 UI 重绘。同一渲染帧内的多个 move 合并成一次更新,
+    // 高回报率鼠标(500–1000Hz)下 UI 排队从事件率降到 ≤ 渲染帧率,快照拷贝同步减少。
+    private int _overlayUpdateQueued;
+
     // System.Threading.Timer:回调跑在 ThreadPool 上;callback 内重新进 lock 同步状态。
     private readonly System.Threading.Timer _gestureTimeoutTimer;
     private readonly System.Threading.Timer _safetyTimer;
@@ -130,20 +134,18 @@ public sealed class GestureEngine : IDisposable
         _startTarget = WindowTargeter.Resolve(_prefsSnapshot.GestureTargetPolicy, _startPointWin);
         _downTick = Environment.TickCount64;
         _currentGestureId = ++_gestureSerial;
-        var showTrail = _prefsSnapshot.ShowTrail;
-        System.Threading.Volatile.Write(ref _activeOverlayGestureId, showTrail ? _currentGestureId : 0);
         _points.Clear();
         _points.Add(_startPoint);
         _scribbleDetector.Reset(_startPoint);
         ArmSafetyTimerLocked();
-        var snapshot = _points.ToArray();
         GestureDiagnosticLogger.Info(
             $"down id={_currentGestureId} x={e.X} y={e.Y} target={FormatHwnd(_startTarget.Hwnd)} " +
             $"activate={_startTarget.ShouldActivate} policy={_prefsSnapshot.GestureTargetPolicy} " +
             $"targetInfo=\"{WindowTargeter.Describe(_startTarget)}\" " +
             $"threshold={_prefsSnapshot.RecognitionThreshold:0.00} timeout={_prefsSnapshot.GestureTimeoutSeconds:0.00} " +
-            $"showTrail={showTrail}");
-        BeginOverlaySynchronously(_currentGestureId, snapshot, showTrail);
+            $"showTrail={_prefsSnapshot.ShowTrail}");
+        // 覆盖层推迟到确认成为手势(Pending→Gesturing)才显示:
+        // 普通右键单击的整个生命周期完全不触碰 UI 线程。
         return true; // 吞掉:先看是不是手势
     }
 
@@ -168,9 +170,12 @@ public sealed class GestureEngine : IDisposable
                     GestureDiagnosticLogger.Info(
                         $"begin_gesture id={_currentGestureId} movement={Distance(_startPoint, p):0.0}px " +
                         $"points={_points.Count} start=({_startPoint.X:0},{_startPoint.Y:0}) now=({p.X:0},{p.Y:0})");
-                    var showTrail = _prefsSnapshot.ShowTrail;
-                    var snapshot = _points.ToArray();
-                    QueueOverlayUpdate(_currentGestureId, snapshot, showTrail);
+                    if (_prefsSnapshot.ShowTrail)
+                    {
+                        System.Threading.Volatile.Write(ref _activeOverlayGestureId, _currentGestureId);
+                        System.Threading.Interlocked.Exchange(ref _overlayUpdateQueued, 0);
+                        QueueOverlayBegin(_currentGestureId, _points.ToArray());
+                    }
                 }
                 return false;
             }
@@ -193,9 +198,7 @@ public sealed class GestureEngine : IDisposable
                         ArmGestureTimeoutTimerLocked();
                         _lastArmedPoint = p;
                     }
-                    var showTrail = _prefsSnapshot.ShowTrail;
-                    var snapshot = _points.ToArray();
-                    QueueOverlayUpdate(_currentGestureId, snapshot, showTrail);
+                    QueueOverlayUpdate(_currentGestureId, _prefsSnapshot.ShowTrail);
                 }
                 return false;
             }
@@ -217,15 +220,11 @@ public sealed class GestureEngine : IDisposable
                 // ★关键★:绝不能在这里(钩子回调内 + 持锁)直接 SendInput。
                 // 从 LL 钩子回调内部注入输入,系统会把注入事件排到当前钩子处理之后并串行化,
                 // 实测右键菜单要等 1.5s 以上。改成 ThreadPool 在回调返回后立刻回放,菜单瞬时弹出。
-                var capturedGestureId = _currentGestureId;
-                var elapsedMs = Environment.TickCount64 - _downTick;
-                GestureDiagnosticLogger.Info($"right_click_replay id={capturedGestureId} elapsedMs={elapsedMs}");
+                GestureDiagnosticLogger.Info(
+                    $"right_click_replay id={_currentGestureId} elapsedMs={Environment.TickCount64 - _downTick}");
+                // Pending 阶段覆盖层从未显示(推迟到 Gesturing 才开),无需隐藏 —— 回放不等 UI 线程。
                 ResetTrackingLocked(hideOverlay: false);
-                ThreadPool.QueueUserWorkItem(_ =>
-                {
-                    HideOverlaySynchronously(capturedGestureId);
-                    KeyboardSender.ReplayRightClick();
-                });
+                ThreadPool.QueueUserWorkItem(static _ => KeyboardSender.ReplayRightClick());
                 return true;
             }
             case State.Gesturing:
@@ -268,12 +267,15 @@ public sealed class GestureEngine : IDisposable
     {
         try
         {
-            // 候选方向序列写进日志 —— 误识别时一眼能看出"我画的"被识成了什么形状
-            var drawn = _recognizer.DescribeSequence(points);
-            var simpleDirection = _recognizer.DescribeSimpleDirection(points);
-            var candidates = _recognizer.DescribeCandidates(points, gestures, version);
-            var trace = DescribeTrace(points, downTick);
-            var match = _recognizer.BestMatch(points, gestures, version, prefs.RecognitionThreshold);
+            // 签名只算一次:日志与判定共用同一个实例,杜绝"日志显示 A、判定用 B"的分叉。
+            // 候选距离 / 轨迹统计这类诊断专用描述串,只在诊断开启时才构造。
+            var signature = GestureDirection.FromPoints(points);
+            var drawn = signature.IsEmpty ? "(empty)" : GestureDirection.DisplayString(signature);
+            var diagnostics = GestureDiagnosticLogger.Enabled;
+            var simpleDirection = diagnostics ? _recognizer.DescribeSimpleDirection(signature) : "";
+            var candidates = diagnostics ? _recognizer.DescribeCandidates(signature, gestures, version) : "";
+            var trace = diagnostics ? DescribeTrace(points, downTick) : "";
+            var match = _recognizer.BestMatch(signature, gestures, version, prefs.RecognitionThreshold);
             if (match is null)
             {
                 Logger.Info($"gesture no match: drawn=[{drawn}] (points={points.Length}, threshold={prefs.RecognitionThreshold:0.00})");
@@ -453,48 +455,23 @@ public sealed class GestureEngine : IDisposable
         _uiDispatcher.BeginInvoke(() => _overlay?.EndGesture(), DispatcherPriority.Render);
     }
 
-    private void BeginOverlaySynchronously(long gestureId, IReadOnlyList<Point> points, bool showTrail)
+    private void QueueOverlayBegin(long gestureId, IReadOnlyList<Point> points)
     {
-        if (!showTrail)
+        // 覆盖层显示必须走 BeginInvoke —— 钩子线程绝不同步等 UI。
+        // (LL 钩子回调超过 LowLevelHooksTimeout 会被系统静默卸钩;首次手势还要现场建 WPF 窗口。)
+        // 与更新同为 Render 优先级,Dispatcher 同优先级 FIFO,Begin 一定先于后续 Update 执行;
+        // 迟到的操作由 stale-id 守卫丢弃。
+        _uiDispatcher.BeginInvoke(() =>
         {
-            GestureDiagnosticLogger.Info($"overlay_begin_skipped id={gestureId} reason=trail_disabled");
-            return;
-        }
-
-        if (_uiDispatcher.HasShutdownStarted || _uiDispatcher.HasShutdownFinished)
-        {
-            GestureDiagnosticLogger.Info($"overlay_begin_skipped id={gestureId} reason=dispatcher_shutdown");
-            return;
-        }
-
-        var started = Environment.TickCount64;
-        try
-        {
-            if (_uiDispatcher.CheckAccess())
+            if (!IsOverlayGestureCurrent(gestureId))
             {
-                if (IsOverlayGestureCurrent(gestureId))
-                {
-                    GetOverlay().BeginGesture(points, showTrail: true);
-                }
+                GestureDiagnosticLogger.Info($"overlay_begin_skipped id={gestureId} reason=stale");
+                return;
             }
-            else
-            {
-                _uiDispatcher.Invoke(() =>
-                {
-                    if (IsOverlayGestureCurrent(gestureId))
-                    {
-                        GetOverlay().BeginGesture(points, showTrail: true);
-                    }
-                }, DispatcherPriority.Send);
-            }
-            GestureDiagnosticLogger.Info(
-                $"overlay_begin id={gestureId} elapsedMs={Environment.TickCount64 - started} points={points.Count}");
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "BeginOverlaySynchronously");
-            GestureDiagnosticLogger.Error(ex, $"BeginOverlaySynchronously id={gestureId}");
-        }
+
+            GetOverlay().BeginGesture(points, showTrail: true);
+            GestureDiagnosticLogger.Info($"overlay_begin id={gestureId} points={points.Count}");
+        }, DispatcherPriority.Render);
     }
 
     private void HideOverlaySynchronously(long? gestureId = null)
@@ -532,22 +509,32 @@ public sealed class GestureEngine : IDisposable
         }
     }
 
-    private void QueueOverlayUpdate(long gestureId, IReadOnlyList<Point> points, bool showTrail)
+    /// <summary>在持有 <c>_stateLock</c> 时调用(读 <c>_points</c>)。</summary>
+    private void QueueOverlayUpdate(long gestureId, bool showTrail)
     {
         if (!showTrail)
         {
             return;
         }
 
+        // 合帧:已有在途更新时直接返回 —— 本点已记入 _points,下一个 move 入队时自然带上,
+        // 不丢形状,只省重绘。UI 排队频率从鼠标事件率降到 ≤ 渲染帧率。
+        if (System.Threading.Interlocked.Exchange(ref _overlayUpdateQueued, 1) == 1)
+        {
+            return;
+        }
+
+        var snapshot = _points.ToArray();
         _uiDispatcher.BeginInvoke(() =>
         {
+            System.Threading.Interlocked.Exchange(ref _overlayUpdateQueued, 0);
             if (!IsOverlayGestureCurrent(gestureId))
             {
                 GestureDiagnosticLogger.Info($"overlay_update_skipped id={gestureId} reason=stale");
                 return;
             }
 
-            GetOverlay().UpdateGesture(points, showTrail);
+            GetOverlay().UpdateGesture(snapshot, showTrail: true);
         }, DispatcherPriority.Render);
     }
 

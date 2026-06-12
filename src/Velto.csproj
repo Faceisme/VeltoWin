@@ -21,6 +21,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Velto.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Resource Include="..\Resources\Velto.ico">
       <Link>Resources\Velto.ico</Link>
     </Resource>
