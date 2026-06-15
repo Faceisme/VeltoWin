@@ -2,6 +2,7 @@ using Velto.Models;
 using Velto.Win32;
 using System.Text;
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 namespace Velto.Services;
 
@@ -103,7 +104,13 @@ public static class WindowTargeter
     }
 
     public static string Describe(Target target)
-        => $"{FormatHwnd(target.Hwnd)} class='{GetClassName(target.Hwnd)}' iconic={IsIconic(target.Hwnd)} activate={target.ShouldActivate}";
+        => $"{FormatHwnd(target.Hwnd)} process='{GetProcessName(target.Hwnd)}' class='{GetClassName(target.Hwnd)}' iconic={IsIconic(target.Hwnd)} activate={target.ShouldActivate}";
+
+    public static string GetTargetClassName(Target target)
+        => GetClassName(target.Hwnd);
+
+    public static string GetTargetProcessName(Target target)
+        => GetProcessName(target.Hwnd);
 
     private static bool IsActivationUnsafe(IntPtr hwnd)
     {
@@ -139,6 +146,30 @@ public static class WindowTargeter
         var buffer = new StringBuilder(256);
         var length = NativeMethods.GetClassNameW(hwnd, buffer, buffer.Capacity);
         return length <= 0 ? string.Empty : buffer.ToString();
+    }
+
+    private static string GetProcessName(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            NativeMethods.GetWindowThreadProcessId(hwnd, out var processId);
+            if (processId == 0)
+            {
+                return string.Empty;
+            }
+
+            using var process = Process.GetProcessById(unchecked((int)processId));
+            return process.ProcessName;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private static string FormatHwnd(IntPtr hwnd)

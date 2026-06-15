@@ -305,6 +305,26 @@ public sealed class GestureEngine : IDisposable
                 $"target={FormatHwnd(target.Hwnd)} activate={target.ShouldActivate} " +
                 $"targetInfo=\"{WindowTargeter.Describe(target)}\" candidates=[{candidates}]");
 
+            var targetProcessName = WindowTargeter.GetTargetProcessName(target);
+            var targetClassName = WindowTargeter.GetTargetClassName(target);
+            if (KeyboardSender.ShouldUseWindowCloseFallback(shortcut, targetProcessName, targetClassName))
+            {
+                WindowTargeter.PrepareForExecution(target);
+                if (target.ShouldActivate)
+                {
+                    WaitForForeground(target.Hwnd, timeoutMs: 150);
+                }
+
+                var fallbackSentInputs = KeyboardSender.SendWindowClose();
+                Logger.Info(
+                    $"gesture close fallback '{match.Command.Name}' targetProcess='{targetProcessName}' " +
+                    $"targetClass='{targetClassName}' Ctrl+W -> Alt+F4 sentInputs={fallbackSentInputs}");
+                GestureDiagnosticLogger.Info(
+                    $"execute id={gestureId} type=window_close_fallback shortcut='Alt+F4' sentInputs={fallbackSentInputs} " +
+                    $"target={FormatHwnd(target.Hwnd)} targetInfo=\"{WindowTargeter.Describe(target)}\"");
+                return;
+            }
+
             if (KeyboardSender.IsBrowserNavigationShortcut(shortcut))
             {
                 WindowTargeter.PrepareForExecution(target);

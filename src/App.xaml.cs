@@ -181,8 +181,31 @@ public partial class App : Application
         _overlay?.Close();
         _showSettingsSignal?.Dispose();
         _listenerStopSignal?.Dispose();
-        _instanceMutex?.Dispose();
+        ReleaseSingleInstance();
         base.OnExit(e);
+    }
+
+    public void RestartAsAdministrator()
+    {
+        if (ElevationService.IsElevated)
+        {
+            Logger.Info("RestartAsAdministrator skipped: already elevated");
+            return;
+        }
+
+        ReleaseSingleInstance();
+        if (ElevationService.TryStartSelfAsAdministrator())
+        {
+            Shutdown();
+            return;
+        }
+
+        if (!TryAcquireSingleInstance())
+        {
+            Logger.Info("RestartAsAdministrator cancelled, but another instance acquired the single-instance mutex");
+            SignalExistingInstanceToShowSettings();
+            Shutdown();
+        }
     }
 
     private bool TryAcquireSingleInstance()
@@ -192,5 +215,31 @@ public partial class App : Application
         const string name = "Velto.SingleInstance";
         _instanceMutex = new System.Threading.Mutex(initiallyOwned: true, name, out var createdNew);
         return createdNew;
+    }
+
+    private void ReleaseSingleInstance()
+    {
+        if (_instanceMutex is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _instanceMutex.ReleaseMutex();
+        }
+        catch (ApplicationException)
+        {
+            // The mutex can already be released after an elevation restart attempt.
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "ReleaseSingleInstance");
+        }
+        finally
+        {
+            _instanceMutex.Dispose();
+            _instanceMutex = null;
+        }
     }
 }

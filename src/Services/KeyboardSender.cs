@@ -19,9 +19,31 @@ public static class KeyboardSender
     public const ushort VK_ESCAPE  = 0x1B;
     public const ushort VK_LEFT    = 0x25;
     public const ushort VK_RIGHT   = 0x27;
+    public const ushort VK_F4      = 0x73;
+    public const ushort VK_W       = 0x57;
 
     public static uint Send(Shortcut shortcut)
         => SendKey(shortcut.VirtualKey, shortcut.Modifiers);
+
+    public static uint SendWindowClose()
+        => SendKey(VK_F4, ModifierKeys.Alt);
+
+    public static bool ShouldUseWindowCloseFallback(Shortcut shortcut, string processName, string className)
+    {
+        if (shortcut.Modifiers != ModifierKeys.Control || shortcut.VirtualKey != VK_W)
+        {
+            return false;
+        }
+
+        if (IsKnownTabCloseProcess(processName))
+        {
+            return false;
+        }
+
+        return processName.Equals("Taskmgr", StringComparison.OrdinalIgnoreCase) ||
+               processName.Equals("Code", StringComparison.OrdinalIgnoreCase) ||
+               className.Equals("TaskManagerWindow", StringComparison.OrdinalIgnoreCase);
+    }
 
     public static bool IsBrowserNavigationShortcut(Shortcut shortcut)
         => BrowserNavigationXButton(shortcut) != 0;
@@ -84,6 +106,14 @@ public static class KeyboardSender
             _ => 0,
         };
     }
+
+    private static bool IsKnownTabCloseProcess(string processName)
+        => processName.Equals("chrome", StringComparison.OrdinalIgnoreCase) ||
+           processName.Equals("msedge", StringComparison.OrdinalIgnoreCase) ||
+           processName.Equals("firefox", StringComparison.OrdinalIgnoreCase) ||
+           processName.Equals("brave", StringComparison.OrdinalIgnoreCase) ||
+           processName.Equals("vivaldi", StringComparison.OrdinalIgnoreCase) ||
+           processName.Equals("opera", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryPostBrowserAppCommand(IntPtr targetHwnd, int appCommand)
     {

@@ -17,6 +17,7 @@ public sealed class TrayIcon : IDisposable
     private const uint MenuOpenSettings = 1001;
     private const uint MenuToggleGestures = 1002;
     private const uint MenuExit = 1003;
+    private const uint MenuRestartAsAdministrator = 1004;
 
     private readonly ConfigStore _store;
     private readonly HwndSource _messageSource;
@@ -119,6 +120,11 @@ public sealed class TrayIcon : IDisposable
             NativeMethods.AppendMenuW(menu, NativeMethods.MF_STRING, new UIntPtr(MenuOpenSettings), "设置...");
             NativeMethods.AppendMenuW(menu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero, null);
 
+            if (!ElevationService.IsElevated)
+            {
+                NativeMethods.AppendMenuW(menu, NativeMethods.MF_STRING, new UIntPtr(MenuRestartAsAdministrator), "以管理员权限重启...");
+            }
+
             var toggleFlags = NativeMethods.MF_STRING |
                               (_store.Preferences.GesturesEnabled ? NativeMethods.MF_CHECKED : 0);
             NativeMethods.AppendMenuW(menu, toggleFlags, new UIntPtr(MenuToggleGestures), "启用鼠标手势");
@@ -158,6 +164,10 @@ public sealed class TrayIcon : IDisposable
                 break;
             case MenuToggleGestures:
                 _store.UpdatePreferences(p => p.GesturesEnabled = !p.GesturesEnabled);
+                break;
+            case MenuRestartAsAdministrator:
+                if (Application.Current is global::Velto.App app)
+                    app.RestartAsAdministrator();
                 break;
             case MenuExit:
                 Application.Current.Shutdown();
