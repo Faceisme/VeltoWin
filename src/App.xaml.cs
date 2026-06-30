@@ -17,6 +17,7 @@ public partial class App : Application
     private HookThread? _hookThread;
     private TrailOverlayWindow? _overlay;
     private GestureEngine? _engine;
+    private FullscreenWatcher? _fullscreenWatcher;
     private TrayIcon? _tray;
     private ShellTransitionDiagnostic? _shellDiagnostic;
     private System.Threading.Mutex? _instanceMutex;
@@ -61,6 +62,9 @@ public partial class App : Application
             _hookThread = new HookThread();
             _hookThread.Start(_engine.HandleMouseEvent);
             Logger.Info("MouseHook installed on dedicated input thread");
+
+            // 全屏应用(游戏等)位于前台时暂停手势,退出后自动恢复。受偏好开关控制。
+            _fullscreenWatcher = new FullscreenWatcher(store);
 
             // 预热轨迹覆盖层:空闲时先把窗口和 HWND 建好,
             // 首次手势显示轨迹时不必现场创建整个 WPF 窗口(可达上百毫秒)。
@@ -176,6 +180,7 @@ public partial class App : Application
         _listenerStopSignal?.Set();
         _tray?.Dispose();
         _shellDiagnostic?.Dispose();
+        _fullscreenWatcher?.Dispose();
         _hookThread?.Stop();
         _engine?.Dispose();
         _overlay?.Close();

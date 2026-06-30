@@ -143,6 +143,7 @@ public partial class SettingsWindow : Window
     {
         EnabledCheck.IsOn = _draftPreferences.GesturesEnabled;
         TrailCheck.IsOn = _draftPreferences.ShowTrail;
+        PauseFullscreenCheck.IsOn = _draftPreferences.PauseInFullscreen;
         TrayIconCheck.IsOn = _draftPreferences.ShowTrayIcon;
         AutoStartCheck.IsOn = _draftAutoStart;
         ScribbleCancelCheck.IsOn = _draftPreferences.ScribbleCancelEnabled;
@@ -286,6 +287,7 @@ public partial class SettingsWindow : Window
         if (_suppressEvents) return;
         _draftPreferences.GesturesEnabled = EnabledCheck.IsOn;
         _draftPreferences.ShowTrail = TrailCheck.IsOn;
+        _draftPreferences.PauseInFullscreen = PauseFullscreenCheck.IsOn;
         _draftPreferences.ScribbleCancelEnabled = ScribbleCancelCheck.IsOn;
         MarkDirty();
     }
@@ -470,6 +472,7 @@ public partial class SettingsWindow : Window
         RecognitionThreshold = source.RecognitionThreshold,
         GestureTimeoutSeconds = source.GestureTimeoutSeconds,
         ScribbleCancelEnabled = source.ScribbleCancelEnabled,
+        PauseInFullscreen = source.PauseInFullscreen,
         GestureTargetPolicy = source.GestureTargetPolicy,
     };
 

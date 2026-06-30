@@ -33,6 +33,12 @@ public sealed class AppPreferences
     /// <summary>启用后,来回乱画或转圈会立即取消当前手势。</summary>
     public bool ScribbleCancelEnabled { get; set; } = true;
 
+    /// <summary>
+    /// 识别到全屏应用(游戏、全屏视频等)位于前台时暂停手势,退出全屏后自动恢复。
+    /// 全屏应用通常自己要用右键,暂停可避免手势抢占右键带来的延迟与误触。
+    /// </summary>
+    public bool PauseInFullscreen { get; set; } = true;
+
     public GestureTargetPolicy GestureTargetPolicy { get; set; } = GestureTargetPolicy.WindowUnderPointer;
 
     public static AppPreferences Default => new();

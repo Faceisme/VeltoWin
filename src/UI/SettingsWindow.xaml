@@ -207,6 +207,17 @@
                             <Border Style="{StaticResource SettingRow}">
                                 <Grid>
                                     <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="全屏应用时暂停手势"/>
+                                        <TextBlock Text="检测到游戏等全屏应用时暂停手势,退出全屏后自动恢复" Style="{StaticResource MutedText}" FontSize="12" Margin="0,1,0,0"/>
+                                    </StackPanel>
+                                    <ui:ToggleSwitch x:Name="PauseFullscreenCheck" HorizontalAlignment="Right" OnContent="" OffContent=""
+                                                     Toggled="OnPrefsChanged"/>
+                                </Grid>
+                            </Border>
+
+                            <Border Style="{StaticResource SettingRow}">
+                                <Grid>
+                                    <StackPanel VerticalAlignment="Center">
                                         <TextBlock Text="开机自动启动"/>
                                         <TextBlock Text="登录 Windows 时自动运行 Velto" Style="{StaticResource MutedText}" FontSize="12" Margin="0,1,0,0"/>
                                     </StackPanel>

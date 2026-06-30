@@ -424,6 +424,7 @@ public sealed class ConfigStore
         RecognitionThreshold = source.RecognitionThreshold,
         GestureTimeoutSeconds = source.GestureTimeoutSeconds,
         ScribbleCancelEnabled = source.ScribbleCancelEnabled,
+        PauseInFullscreen = source.PauseInFullscreen,
         GestureTargetPolicy = source.GestureTargetPolicy,
     };
 
