@@ -66,6 +66,16 @@ public sealed class GestureEngine : IDisposable
     // System.Threading.Timer:回调跑在 ThreadPool 上;callback 内重新进 lock 同步状态。
     private readonly System.Threading.Timer _gestureTimeoutTimer;
     private readonly System.Threading.Timer _safetyTimer;
+    private bool _disposed;
+
+    // 陈旧回调过滤:Timer.Change(Infinite) 无法撤销已出队、正在等锁的回调。
+    // 记录最近一次武装的时刻与时长,回调里核对"确实过了足额时间"才生效,
+    // 否则上一条手势的超时回调可能恰好在新手势进入 Gesturing 后拿到锁,把新手势误杀。
+    private long _gestureTimeoutArmedAtTick;
+    private int _gestureTimeoutDueMs;
+    private long _safetyArmedAtTick;
+    private int _safetyDueMs;
+    private const int TimerEarlyFireToleranceMs = 50;
 
     private const double MovementThreshold        = 10;
     private const double MinimumRecordedDistance  = 2;
@@ -97,6 +107,12 @@ public sealed class GestureEngine : IDisposable
 
     public void Dispose()
     {
+        // 先在锁内立 flag,让还在等锁的计时器回调进来就退出,
+        // 不再触碰即将被 Dispose 的 Timer(否则 Change 抛 ObjectDisposedException)。
+        lock (_stateLock)
+        {
+            _disposed = true;
+        }
         _gestureTimeoutTimer.Dispose();
         _safetyTimer.Dispose();
     }
@@ -104,11 +120,21 @@ public sealed class GestureEngine : IDisposable
     /// <summary>由 <see cref="MouseHook"/> 在 hook 线程上直接调。返回 <c>true</c> = 吞掉。</summary>
     public bool HandleMouseEvent(MouseEvent e)
     {
-        // 无锁快速拒绝:手势关闭时所有事件直接放行,连锁都不抢。
-        if (!_prefsSnapshot.GesturesEnabled) return false;
-
-        // 设置窗口活动时整体让路 —— 右键交给录制画布/系统菜单,不吞不识别。
-        if (GestureGate.Suspended) return false;
+        // 无锁快速拒绝:手势关闭 / 暂停(设置窗口活动、全屏应用)时所有事件直接放行。
+        // 若恰好在手势进行中途被暂停(全屏轮询翻转、托盘开关),立刻复位状态并收掉轨迹,
+        // 不等安全兜底计时器 —— 否则覆盖层会在屏幕上挂最长 8~12 秒。
+        // _state 只在 hook 线程上从 Idle 变为非 Idle,这里无锁读到 Idle 即可放心走快路径。
+        if (!_prefsSnapshot.GesturesEnabled || GestureGate.Suspended)
+        {
+            if (_state != State.Idle)
+            {
+                lock (_stateLock)
+                {
+                    if (_state != State.Idle) ResetTrackingLocked();
+                }
+            }
+            return false;
+        }
 
         lock (_stateLock)
         {
@@ -184,7 +210,8 @@ public sealed class GestureEngine : IDisposable
                 var p = new Point(e.X, e.Y);
                 if (_prefsSnapshot.ScribbleCancelEnabled && _scribbleDetector.Update(p))
                 {
-                    Logger.Info("gesture cancelled: 乱画作废");
+                    // 日志是同步文件 I/O,不能在 LL 钩子回调里做(磁盘慢会把回调推过 LowLevelHooksTimeout)
+                    ThreadPool.QueueUserWorkItem(static _ => Logger.Info("gesture cancelled: 乱画作废"));
                     GestureDiagnosticLogger.Info($"cancel_scribble id={_currentGestureId}");
                     CancelAndAwaitRightUpLocked();
                     return false;
@@ -356,7 +383,6 @@ public sealed class GestureEngine : IDisposable
         }
     }
 
-    /// <summary>轮询等待目标窗口拿到前台,拿到立即返回;超时也返回(已尽力)。</summary>
     private static string DescribeTrace(IReadOnlyList<Point> points, long downTick)
     {
         if (points.Count == 0)
@@ -406,6 +432,7 @@ public sealed class GestureEngine : IDisposable
     private static string FormatNullable(double? value)
         => value.HasValue ? value.Value.ToString("0.000") : "null";
 
+    /// <summary>轮询等待目标窗口拿到前台,拿到立即返回;超时也返回(已尽力)。</summary>
     private static void WaitForForeground(IntPtr hwnd, int timeoutMs)
     {
         var deadline = Environment.TickCount64 + timeoutMs;
@@ -567,19 +594,29 @@ public sealed class GestureEngine : IDisposable
     private void ArmSafetyTimerLocked()
     {
         var ms = (int)(Math.Max(SafetyTimeoutSeconds, _prefsSnapshot.GestureTimeoutSeconds + 2) * 1000);
+        _safetyArmedAtTick = Environment.TickCount64;
+        _safetyDueMs = ms;
         _safetyTimer.Change(ms, Timeout.Infinite);
     }
 
     private void ArmGestureTimeoutTimerLocked()
     {
         var ms = (int)(Math.Max(0.5, _prefsSnapshot.GestureTimeoutSeconds) * 1000);
+        _gestureTimeoutArmedAtTick = Environment.TickCount64;
+        _gestureTimeoutDueMs = ms;
         _gestureTimeoutTimer.Change(ms, Timeout.Infinite);
     }
+
+    /// <summary>距最近一次武装尚未过足额时长 = 上一次武装遗留的陈旧回调,丢弃。</summary>
+    private bool IsStaleTimerCallbackLocked(long armedAtTick, int dueMs)
+        => Environment.TickCount64 - armedAtTick < dueMs - TimerEarlyFireToleranceMs;
 
     private void OnGestureTimeoutFired(object? _)
     {
         lock (_stateLock)
         {
+            if (_disposed) return;
+            if (IsStaleTimerCallbackLocked(_gestureTimeoutArmedAtTick, _gestureTimeoutDueMs)) return;
             if (_state == State.Gesturing)
             {
                 GestureDiagnosticLogger.Info($"cancel_timeout id={_currentGestureId}");
@@ -592,6 +629,8 @@ public sealed class GestureEngine : IDisposable
     {
         lock (_stateLock)
         {
+            if (_disposed) return;
+            if (IsStaleTimerCallbackLocked(_safetyArmedAtTick, _safetyDueMs)) return;
             if (_state != State.Idle)
             {
                 GestureDiagnosticLogger.Info($"cancel_safety_timeout id={_currentGestureId} state={_state}");

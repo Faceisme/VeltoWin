@@ -439,11 +439,21 @@ public partial class SettingsWindow : Window
         try
         {
             var (gestures, preferences) = _store.ReadBackup(File.ReadAllBytes(dlg.FileName));
-            _draftGestures.Clear();
-            _draftGestures.AddRange(gestures);
-            _draftPreferences = preferences;
-            RebuildGestureRows(_draftGestures.FirstOrDefault()?.Id);
-            LoadPreferenceControls();
+            // 必须屏蔽控件事件(与 ReloadFromStore 一致):否则 LoadPreferenceControls 设第一个
+            // 开关就触发 OnPrefsChanged,把尚未更新的旧 UI 值回写进刚导入的草稿,导入值被覆盖。
+            _suppressEvents = true;
+            try
+            {
+                _draftGestures.Clear();
+                _draftGestures.AddRange(gestures);
+                _draftPreferences = preferences;
+                RebuildGestureRows(_draftGestures.FirstOrDefault()?.Id);
+                LoadPreferenceControls();
+            }
+            finally
+            {
+                _suppressEvents = false;
+            }
             MarkDirty();
         }
         catch (Exception ex)

@@ -187,6 +187,15 @@ public partial class TrailOverlayWindow : Window
             {
                 TrailLine.Points.Add(ToLocal(points[i]));
             }
+
+            // 点数到达引擎上限(512)后,新点是原地替换最后一个点 —— 数量不变但尾点在动,
+            // 单靠增量追加会让轨迹尾段冻结,这里把最后一点同步过来。
+            var lastIndex = TrailLine.Points.Count - 1;
+            var lastLocal = ToLocal(points[^1]);
+            if (TrailLine.Points[lastIndex] != lastLocal)
+            {
+                TrailLine.Points[lastIndex] = lastLocal;
+            }
         }
 
         var head = ToLocal(points[^1]);
